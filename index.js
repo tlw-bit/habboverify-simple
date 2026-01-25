@@ -114,7 +114,7 @@ async function fetchHabboMotto(name) {
       headers: {
         Accept: "application/json",
         "User-Agent":
-          "Mozilla/5.0 (VerifierBot; +https://discord.com) VerifierBot/1.0",
+         "Mozilla/5.0 (ConciergeBot; +https://discord.com) ConciergeBot/1.0",
         Referer: "https://www.habbo.com/",
       },
     });
@@ -155,12 +155,12 @@ function sendLogEmbed(guild, embed) {
 
 function verifiedEmbed(userId, habboName) {
   return new EmbedBuilder()
-    .setTitle("✅ User Verified")
+    .setTitle("🛎️ Check-in Complete")
     .setColor(0x57f287)
     .addFields(
       { name: "User", value: `<@${userId}>`, inline: true },
-      { name: "Habbo Name", value: habboName, inline: true }
-    )
+    { name: "Habbo Guest", value: habboName, inline: true }
+
     .setTimestamp();
 }
 
@@ -169,9 +169,13 @@ function joinEmbed(member) {
     .setTitle("✅ Member Joined")
     .setColor(0x57f287)
     .setDescription(`<@${member.user.id}> joined the server.`)
+   function verifiedEmbed(userId, habboName) {
+  return new EmbedBuilder()
+    .setTitle("🛎️ Check-in Complete")
+    .setColor(0x57f287)
     .addFields(
-      { name: "User", value: member.user.tag, inline: true },
-      { name: "ID", value: member.user.id, inline: true }
+      { name: "User", value: `<@${userId}>`, inline: true },
+      { name: "Habbo Guest", value: habboName, inline: true }
     )
     .setTimestamp();
 }
@@ -271,11 +275,12 @@ client.on("guildMemberAdd", async (member) => {
       : `👤 **Invited by:** _(unknown)_`;
 
     const embed = new EmbedBuilder()
-      .setTitle("👋 Welcome!")
+      .setTitle("🏨 Welcome to the Hotel's hideout!")
+
       .setDescription(
         `Welcome to the server, <@${member.id}>!\n\n` +
           `${invitedLine}\n\n` +
-          `Please head to <#${VERIFY_CHANNEL_ID}> to verify and get started.`
+          `Please head to <#${VERIFY_CHANNEL_ID}> to check in and get started.`
       )
       .setColor(0x2ecc71)
       .setThumbnail(member.user.displayAvatarURL())
@@ -349,6 +354,32 @@ function randInt(min, max) {
   const b = Math.floor(max);
   return Math.floor(Math.random() * (b - a + 1)) + a;
 }
+
+// ====== SLASH COMMAND: /level ONLY ======
+client.on("interactionCreate", async (interaction) => {
+  try {
+    if (!interaction.isChatInputCommand()) return;
+    if (interaction.commandName !== "level") return;
+
+    const u = interaction.options.getUser("user") || interaction.user;
+    const userObj = ensureXpUser(u.id);
+    const needed = xpNeeded(userObj.level);
+
+    return interaction.reply(
+      `🛎️ <@${u.id}> is **Status ${userObj.level}**` +
+        (userObj.prestige ? ` (⭐ Prestige **${userObj.prestige}**)` : "") +
+        `\nReputation: **${userObj.xp}/${needed}**`
+    );
+  } catch (err) {
+    console.error("interactionCreate /level error:", err);
+    if (interaction.isRepliable() && !interaction.replied) {
+      await interaction
+        .reply({ content: "Something went wrong 😬", ephemeral: true })
+        .catch(() => {});
+    }
+  }
+});
+
 
 // Global rank: order by level desc, then xp desc
 function getGlobalRank(userId) {
@@ -482,7 +513,7 @@ async function generateRankCard(member, userObj) {
     afterPillX = rowX + pillW + 16;
   }
 
-  const restText = `Level ${userObj.level} • ${userObj.xp}/${needed} XP`;
+ const restText = `Status ${userObj.level} • ${userObj.xp}/${needed} Rep`;
   const maxRestWidth = width - 36 - afterPillX - 20;
   const restSize = fitText(ctx, restText, maxRestWidth, 18, "Sans");
 
@@ -493,7 +524,8 @@ async function generateRankCard(member, userObj) {
   ctx.fillStyle = "#e5e7eb";
   ctx.font = "18px Sans";
   ctx.fillText(`🏆 #${rank} / ${total}`, 220, 172);
-  ctx.fillText(`🎟️ Invites: ${invites}`, 220, 198);
+  ctx.fillText(`🎟️ Referrals: ${invites}`, 220, 198);
+
 
   const barX = 220;
   const barY = 220;
@@ -671,8 +703,8 @@ client.on("messageCreate", async (msg) => {
       const needed = xpNeeded(userObj.level);
 
       return msg.reply(
-        `📈 <@${u.id}> is **Level ${userObj.level}** (Prestige **${userObj.prestige || 0}**)\n` +
-          `XP: **${userObj.xp}/${needed}**`
+       `🛎️ <@${u.id}> is **Status ${userObj.level}** (⭐ Prestige **${userObj.prestige || 0}**)\n` +
+  `Reputation: **${userObj.xp}/${needed}**`
       );
     }
 
