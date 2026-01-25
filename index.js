@@ -1,4 +1,3 @@
-// ===================== CHUNK 1/4 =====================
 console.log("Bot starting...");
 
 const {
@@ -7,9 +6,6 @@ const {
   EmbedBuilder,
   AttachmentBuilder,
   PermissionsBitField,
-  REST,
-  Routes,
-  SlashCommandBuilder,
 } = require("discord.js");
 
 const path = require("path");
@@ -24,13 +20,10 @@ const fetchFn =
 const PREFIX = "!";
 const VERIFIED_ROLE = "Verified";
 const OLD_ROLE_TO_REMOVE = "Unverified";
+
 const VERIFY_CHANNEL_ID = "1462386529765691473";
 const LOG_CHANNEL_ID = "1456955298597175391";
 const WELCOME_CHANNEL_ID = "1456962809425559613";
-
-// ====== SLASH COMMANDS (for /xp /leaderboard /rank) ======
-const CLIENT_ID = process.env.CLIENT_ID || "1462214316332679355"; // your bot application ID
-const GUILD_ID = process.env.GUILD_ID || "1456735416156819578";   // your server ID (guild) for fast updates
 
 // ====== XP / LEVELING CONFIG ======
 const XP_FILE = path.join(__dirname, "xp.json");
@@ -44,43 +37,42 @@ const XP_BLOCKED_CHANNEL_IDS = ["1462386529765691473"]; // e.g. ["999"]
 const XP_MIN = 10;
 const XP_MAX = 20;
 const XP_COOLDOWN_SECONDS = 60;
-const PRESTIGE_AT_LEVEL = 50;     // prestige when reaching this level
-const PRESTIGE_RESET_LEVEL = 1;   // new level after prestige
-const PRESTIGE_RESET_XP = 0;      // xp after prestige
 
-// Where to announce level-ups (optional). Leave "" to announce in the same channel.
+const PRESTIGE_AT_LEVEL = 50; // prestige when reaching this level
+const PRESTIGE_RESET_LEVEL = 1; // new level after prestige
+const PRESTIGE_RESET_XP = 0; // xp after prestige
+
+// Where to announce level-ups. Leave "" to announce in the same channel.
 const LEVEL_UP_CHANNEL_ID = "1456967580299559066";
 
 // Optional level roles: level -> roleId
 const LEVEL_ROLES = {
-  2: "1462479094859038773",  // Pool’s Closed
-  5: "1462479797304295535",  // Chair Rotator (PRO)
-  8: "1462480092910587925",  // Fake HC Member
-  12:"1462480383328129075",  // HC Member (Trust Me)
-  16:"1462480917322010715",  // Coin Beggar
-  20:"1462480684496060728",  // Club NX Bouncer
-  25:"1462481138546381127",  // Dancefloor Menace
-  30:"1462481539391684760",  // Definitely Legit
-  40:"1462478268199600129",  // Touch Grass Challenge Failed
-  50:"1462478548961857844",  // Hotel Legend (Unemployed)
+  2: "1462479094859038773", // Pool’s Closed
+  5: "1462479797304295535", // Chair Rotator (PRO)
+  8: "1462480092910587925", // Fake HC Member
+  12: "1462480383328129075", // HC Member (Trust Me)
+  16: "1462480917322010715", // Coin Beggar
+  20: "1462480684496060728", // Club NX Bouncer
+  25: "1462481138546381127", // Dancefloor Menace
+  30: "1462481539391684760", // Definitely Legit
+  40: "1462478268199600129", // Touch Grass Challenge Failed
+  50: "1462478548961857844", // Hotel Legend (Unemployed)
 };
 
 // ====== RANK CARD: ROLE ACCENT COLOURS ======
-// roleId -> hex colour
 const ROLE_ACCENTS = {
-  "1462479094859038773": "#facc15", // lvl 2
-  "1462479797304295535": "#d97706", // lvl 5
-  "1462480092910587925": "#3b82f6", // lvl 8
-  "1462480383328129075": "#22c55e", // lvl 12
-  "1462480917322010715": "#f59e0b", // lvl 16
-  "1462480684496060728": "#a855f7", // lvl 20
-  "1462481138546381127": "#ec4899", // lvl 25
-  "1462481539391684760": "#10b981", // lvl 30
-  "1462478268199600129": "#16a34a", // lvl 40
-  "1462478548961857844": "#38bdf8", // lvl 50
+  "1462479094859038773": "#facc15",
+  "1462479797304295535": "#d97706",
+  "1462480092910587925": "#3b82f6",
+  "1462480383328129075": "#22c55e",
+  "1462480917322010715": "#f59e0b",
+  "1462480684496060728": "#a855f7",
+  "1462481138546381127": "#ec4899",
+  "1462481539391684760": "#10b981",
+  "1462478268199600129": "#16a34a",
+  "1462478548961857844": "#38bdf8",
 };
 
-// fallback accent if no mapped roles are found
 const DEFAULT_ACCENT = "#5865f2";
 
 // ====== INVITE TRACKING STORAGE ======
@@ -103,13 +95,12 @@ function saveInvitesData(obj) {
 
 let invitesData = loadInvitesDataSafe();
 
-// userId -> Habbo verification code
+// ====== VERIFICATION PENDING CODES (GLOBAL) ======
 const pending = new Map();
-
 function makeCode() {
   return "verify-" + Math.random().toString(36).slice(2, 8).toUpperCase();
 }
-// ===================== CHUNK 2/4 =====================
+
 async function fetchHabboMotto(name) {
   const base = "https://www.habbo.com";
   const url = `${base}/api/public/users?name=${encodeURIComponent(name)}`;
@@ -141,7 +132,6 @@ async function fetchHabboMotto(name) {
       }
       if (res.status === 404) throw new Error("Habbo user not found on habbo.com.");
       if (res.status === 429) throw new Error("Too many requests. Try again in a moment.");
-
       throw new Error(`Habbo API error (${res.status}).`);
     }
 
@@ -155,6 +145,7 @@ async function fetchHabboMotto(name) {
   }
 }
 
+// ====== LOG EMBEDS ======
 function sendLogEmbed(guild, embed) {
   if (!LOG_CHANNEL_ID) return;
   const channel = guild.channels.cache.get(LOG_CHANNEL_ID);
@@ -197,6 +188,7 @@ function leaveEmbed(member) {
     .setTimestamp();
 }
 
+// ====== CLIENT ======
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -230,7 +222,6 @@ client.on("inviteDelete", async (invite) => {
   await cacheGuildInvites(invite.guild);
 });
 
-// ====== JOIN / LEAVE + INVITE DETECTION + WELCOME ======
 client.on("guildMemberAdd", async (member) => {
   sendLogEmbed(member.guild, joinEmbed(member));
 
@@ -299,52 +290,6 @@ client.on("guildMemberAdd", async (member) => {
     console.error("welcome send error:", err?.message || err);
   }
 });
-async function registerSlashCommands() {
-  if (!CLIENT_ID) {
-    console.warn("⚠️ CLIENT_ID missing. Slash commands will NOT register.");
-    return;
-  }
-  if (!GUILD_ID) {
-    console.warn("⚠️ GUILD_ID missing. Slash commands will NOT register.");
-    return;
-  }
-
-  const commands = [
-    new SlashCommandBuilder()
-      .setName("xp")
-      .setDescription("Show your (or someone else's) XP + level.")
-      .addUserOption((opt) =>
-        opt.setName("user").setDescription("User to check").setRequired(false)
-      ),
-
-    new SlashCommandBuilder()
-      .setName("leaderboard")
-      .setDescription("Show the XP leaderboard (top 20)."),
-
-    new SlashCommandBuilder()
-      .setName("rank")
-      .setDescription("Generate a rank card.")
-      .addUserOption((opt) =>
-        opt.setName("user").setDescription("User to generate for").setRequired(false)
-      ),
-  ].map((c) => c.toJSON());
-
-  const token = String(process.env.DISCORD_TOKEN || "").trim();
-  if (!token) {
-    console.warn("⚠️ DISCORD_TOKEN missing. Slash commands will NOT register.");
-    return;
-  }
-
-  const rest = new REST({ version: "10" }).setToken(token);
-
-  try {
-    console.log("🔧 Registering slash commands...");
-    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-    console.log("✅ Slash commands registered.");
-  } catch (e) {
-    console.error("❌ Slash command registration failed:", e);
-  }
-}
 
 client.on("guildMemberRemove", (member) => {
   sendLogEmbed(member.guild, leaveEmbed(member));
@@ -354,16 +299,12 @@ client.on("guildMemberRemove", (member) => {
 client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
-  await registerSlashCommands();
-
   for (const guild of client.guilds.cache.values()) {
     await cacheGuildInvites(guild);
   }
 });
 
-
-// ===================== CHUNK 3/4 =====================
-// ====== XP / LEVELING STORAGE ======
+// ====== XP STORAGE ======
 function loadXpDataSafe() {
   if (!fs.existsSync(XP_FILE)) return { users: {} };
   try {
@@ -383,19 +324,12 @@ let xpData = loadXpDataSafe();
 
 function ensureXpUser(userId) {
   if (!xpData.users[userId]) {
-    xpData.users[userId] = {
-      xp: 0,
-      level: 1,
-      prestige: 0,      // ✅ NEW
-      lastXpAt: 0,
-    };
+    xpData.users[userId] = { xp: 0, level: 1, prestige: 0, lastXpAt: 0 };
   } else {
-    // ✅ Backwards compatible: add prestige to old saves
     if (typeof xpData.users[userId].prestige !== "number") xpData.users[userId].prestige = 0;
   }
   return xpData.users[userId];
 }
-
 
 // XP curve
 function xpNeeded(level) {
@@ -405,7 +339,8 @@ function xpNeeded(level) {
 function shouldAwardXp(channelId) {
   const cid = String(channelId);
   if (XP_BLOCKED_CHANNEL_IDS.map(String).includes(cid)) return false;
-  if (XP_ALLOWED_CHANNEL_IDS.length > 0 && !XP_ALLOWED_CHANNEL_IDS.map(String).includes(cid)) return false;
+  if (XP_ALLOWED_CHANNEL_IDS.length > 0 && !XP_ALLOWED_CHANNEL_IDS.map(String).includes(cid))
+    return false;
   return true;
 }
 
@@ -433,12 +368,10 @@ function getInviteCount(userId) {
 function pickAccentForMember(member) {
   if (!member) return DEFAULT_ACCENT;
 
-  // If they have any of the level roles, use that accent colour
   for (const [roleId, hex] of Object.entries(ROLE_ACCENTS)) {
     if (member.roles.cache.has(roleId)) return hex;
   }
 
-  // Fallback: highest coloured role in Discord
   const coloured = member.roles.cache
     .filter((r) => r.color && r.color !== 0)
     .sort((a, b) => b.position - a.position)
@@ -447,6 +380,7 @@ function pickAccentForMember(member) {
   return coloured?.hexColor || DEFAULT_ACCENT;
 }
 
+// ====== RANK CARD DRAW HELPERS ======
 function roundRect(ctx, x, y, w, h, r) {
   const radius = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
@@ -498,20 +432,16 @@ async function generateRankCard(member, userObj) {
   const { rank, total } = getGlobalRank(user.id);
   const invites = getInviteCount(user.id);
 
-  // Background
   ctx.fillStyle = "#0b1220";
   ctx.fillRect(0, 0, width, height);
 
-  // Card panel
   ctx.fillStyle = "#0f172a";
   roundRect(ctx, 18, 18, width - 36, height - 36, 18);
   ctx.fill();
 
-  // Accent strip
   ctx.fillStyle = accent;
   ctx.fillRect(18, 18, width - 36, 8);
 
-  // Avatar
   const avatarURL = user.displayAvatarURL({ extension: "png", size: 256 });
   const avatar = await loadImage(avatarURL);
 
@@ -523,18 +453,14 @@ async function generateRankCard(member, userObj) {
   ctx.drawImage(avatar, 54, 73, 136, 136);
   ctx.restore();
 
-  // Name
   ctx.fillStyle = "#ffffff";
   ctx.font = "bold 34px Sans";
   ctx.fillText(user.username, 220, 108);
 
-  // Tag line + Prestige badge
   const prestige = Number(userObj.prestige || 0);
 
   const rowX = 220;
   const rowY = 140;
-
-  // where the "restText" should start drawing
   let afterPillX = rowX;
 
   if (prestige > 0) {
@@ -545,10 +471,7 @@ async function generateRankCard(member, userObj) {
     ctx.font = "bold 14px Sans";
     const textPadX = 14;
 
-    const pillW = Math.max(
-      120,
-      Math.ceil(ctx.measureText(prestigeText).width) + textPadX * 2
-    );
+    const pillW = Math.max(120, Math.ceil(ctx.measureText(prestigeText).width) + textPadX * 2);
 
     drawPill(ctx, rowX, pillY, pillW, pillH, "#111827", accent);
 
@@ -559,7 +482,6 @@ async function generateRankCard(member, userObj) {
     afterPillX = rowX + pillW + 16;
   }
 
-  // Rest of line
   const restText = `Level ${userObj.level} • ${userObj.xp}/${needed} XP`;
   const maxRestWidth = width - 36 - afterPillX - 20;
   const restSize = fitText(ctx, restText, maxRestWidth, 18, "Sans");
@@ -568,14 +490,11 @@ async function generateRankCard(member, userObj) {
   ctx.font = `${restSize}px Sans`;
   ctx.fillText(restText, afterPillX, rowY);
 
-
-  // Global rank + invites
   ctx.fillStyle = "#e5e7eb";
   ctx.font = "18px Sans";
   ctx.fillText(`🏆 #${rank} / ${total}`, 220, 172);
   ctx.fillText(`🎟️ Invites: ${invites}`, 220, 198);
 
-  // XP bar bg
   const barX = 220;
   const barY = 220;
   const barW = 680;
@@ -585,12 +504,10 @@ async function generateRankCard(member, userObj) {
   roundRect(ctx, barX, barY, barW, barH, 12);
   ctx.fill();
 
-  // XP bar fill
   ctx.fillStyle = accent;
   roundRect(ctx, barX, barY, Math.max(10, barW * progress), barH, 12);
   ctx.fill();
 
-  // XP % text
   ctx.fillStyle = "#0b1220";
   ctx.font = "bold 14px Sans";
   const pct = Math.round(progress * 100);
@@ -599,16 +516,17 @@ async function generateRankCard(member, userObj) {
   return canvas.toBuffer();
 }
 
-
-// ---------- LEVEL ROLES + LEVEL-UP ANNOUNCEMENTS ----------
+// ====== LEVEL ROLES + ANNOUNCEMENTS ======
 function getLevelRolePairsSorted(guild) {
   return Object.entries(LEVEL_ROLES)
     .map(([lvl, roleId]) => ({ lvl: Number(lvl), roleId: String(roleId) }))
-    .filter((x) => Number.isFinite(x.lvl) && x.lvl > 0 && x.roleId && guild.roles.cache.get(x.roleId))
+    .filter(
+      (x) =>
+        Number.isFinite(x.lvl) && x.lvl > 0 && x.roleId && guild.roles.cache.get(x.roleId)
+    )
     .sort((a, b) => a.lvl - b.lvl);
 }
 
-// Removes old level roles, keeps ONLY the correct one
 async function applyLevelRoles(member, level) {
   const pairs = getLevelRolePairsSorted(member.guild);
   if (!pairs.length) return;
@@ -628,17 +546,14 @@ async function applyLevelRoles(member, level) {
 
   const rolesToRemove = allLevelRoleIds.filter((id) => id !== targetRoleId);
   if (rolesToRemove.length) await member.roles.remove(rolesToRemove).catch(() => {});
-
-  if (!member.roles.cache.has(targetRoleId)) {
-    await member.roles.add(targetRoleId).catch(() => {});
-  }
+  if (!member.roles.cache.has(targetRoleId)) await member.roles.add(targetRoleId).catch(() => {});
 }
 
 function cringeLevelUpLine(level, userMention) {
   const lines = {
-    2:  `🚧 ${userMention} unlocked **Pool’s Closed**. Lifeguard is imaginary.`,
-    5:  `🪑 ${userMention} is now **Chair Rotator (PRO)**. Spin responsibly.`,
-    8:  `🧢 ${userMention} achieved **Fake HC Member**. Badge? Never heard of it.`,
+    2: `🚧 ${userMention} unlocked **Pool’s Closed**. Lifeguard is imaginary.`,
+    5: `🪑 ${userMention} is now **Chair Rotator (PRO)**. Spin responsibly.`,
+    8: `🧢 ${userMention} achieved **Fake HC Member**. Badge? Never heard of it.`,
     12: `🧃 ${userMention} unlocked **HC Member (Trust Me)**. Source: “trust me”.`,
     16: `🪙 🚨 WARNING: ${userMention} has reached **Coin Beggar** status.`,
     20: `🚪 ${userMention} promoted to **Club NX Bouncer**. Pay: exposure.`,
@@ -660,13 +575,10 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
     const ch =
       guild.channels.cache.get(LEVEL_UP_CHANNEL_ID) ||
       (await guild.channels.fetch(LEVEL_UP_CHANNEL_ID).catch(() => null));
-
     if (ch && ch.isTextBased()) targetChannel = ch;
   }
 
-  if (targetChannel) {
-    await targetChannel.send({ content: line }).catch(() => {});
-  }
+  if (targetChannel) await targetChannel.send({ content: line }).catch(() => {});
 }
 
 async function processLevelUps({ guild, channel, userObj, userDiscord, member }) {
@@ -674,7 +586,7 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
     userObj.xp -= xpNeeded(userObj.level);
     userObj.level += 1;
 
-    // ✅ PRESTIGE check
+    // PRESTIGE check
     if (userObj.level >= PRESTIGE_AT_LEVEL) {
       userObj.prestige = Number(userObj.prestige || 0) + 1;
 
@@ -682,48 +594,39 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
       userObj.level = PRESTIGE_RESET_LEVEL;
       userObj.xp = PRESTIGE_RESET_XP;
 
-      // OPTIONAL: announce "hit level 50" first (delete if you want only 1 message)
+      // announce the level 50 "final form" line
       await announceLevelUp(guild, channel, userDiscord, PRESTIGE_AT_LEVEL).catch(() => {});
 
-      // Send prestige message to level-up channel (if set), otherwise current channel
+      // prestige message
       const userMention = `<@${userDiscord.id}>`;
       const prestigeMsg =
         `🏨✨ ${userMention} hit **Level ${PRESTIGE_AT_LEVEL}** and unlocked ` +
         `**PRESTIGE ${userObj.prestige}**! Back to Level ${PRESTIGE_RESET_LEVEL} we go.`;
 
       let targetChannel = channel;
-
       if (LEVEL_UP_CHANNEL_ID) {
         const ch =
           guild.channels.cache.get(LEVEL_UP_CHANNEL_ID) ||
           (await guild.channels.fetch(LEVEL_UP_CHANNEL_ID).catch(() => null));
         if (ch && ch.isTextBased()) targetChannel = ch;
       }
+      if (targetChannel) await targetChannel.send({ content: prestigeMsg }).catch(() => {});
 
-      if (targetChannel) {
-        await targetChannel.send({ content: prestigeMsg }).catch(() => {});
-      }
-
-      // remove ALL level roles (since they're back to level 1)
+      // remove all level roles (back to level 1)
       if (member) {
         const pairs = getLevelRolePairsSorted(member.guild);
         const allLevelRoleIds = pairs.map((p) => p.roleId);
-        if (allLevelRoleIds.length) {
-          await member.roles.remove(allLevelRoleIds).catch(() => {});
-        }
+        if (allLevelRoleIds.length) await member.roles.remove(allLevelRoleIds).catch(() => {});
       }
 
-      // Important: stop looping this prestige cycle (xp is reset anyway)
       break;
     }
 
-    // normal level-up
     await announceLevelUp(guild, channel, userDiscord, userObj.level).catch(() => {});
     if (member) await applyLevelRoles(member, userObj.level).catch(() => {});
   }
 }
 
-// ===================== CHUNK 4/4 =====================
 // ====== COMMANDS + XP ======
 client.on("messageCreate", async (msg) => {
   try {
@@ -732,7 +635,7 @@ client.on("messageCreate", async (msg) => {
 
     const isCommand = msg.content.startsWith(PREFIX);
 
-    // ====== XP AWARDING (runs on non-command messages) ======
+    // XP awarding (non-command messages)
     if (!isCommand && shouldAwardXp(msg.channel.id)) {
       const userObj = ensureXpUser(msg.author.id);
       const now = Date.now();
@@ -761,8 +664,6 @@ client.on("messageCreate", async (msg) => {
     const args = msg.content.slice(PREFIX.length).trim().split(/\s+/);
     const cmd = (args.shift() || "").toLowerCase();
 
-    console.log("CMD:", cmd, "FROM:", msg.author.tag, "IN:", msg.channel?.name);
-
     // ---- XP commands ----
     if (cmd === "level" || cmd === "xp") {
       const u = msg.mentions.users.first() || msg.author;
@@ -770,21 +671,27 @@ client.on("messageCreate", async (msg) => {
       const needed = xpNeeded(userObj.level);
 
       return msg.reply(
-        `📈 <@${u.id}> is **Level ${userObj.level}**\n` +
+        `📈 <@${u.id}> is **Level ${userObj.level}** (Prestige **${userObj.prestige || 0}**)\n` +
           `XP: **${userObj.xp}/${needed}**`
       );
     }
 
     if (cmd === "xpleaderboard" || cmd === "lblevel") {
       const entries = Object.entries(xpData.users || {})
-        .map(([uid, u]) => ({ uid, level: Number(u.level) || 1, xp: Number(u.xp) || 0 }))
-        .sort((a, b) => (b.level - a.level) || (b.xp - a.xp))
+        .map(([uid, u]) => ({
+          uid,
+          level: Number(u.level) || 1,
+          prestige: Number(u.prestige) || 0,
+          xp: Number(u.xp) || 0,
+        }))
+        .sort((a, b) => (b.prestige - a.prestige) || (b.level - a.level) || (b.xp - a.xp))
         .slice(0, 20);
 
       if (!entries.length) return msg.reply("No XP data yet.");
 
       const lines = entries.map(
-        (x, i) => `**${i + 1}.** <@${x.uid}> — **Lvl ${x.level}** (${x.xp}xp)`
+        (x, i) =>
+          `**${i + 1}.** <@${x.uid}> — **P${x.prestige} Lvl ${x.level}** (${x.xp}xp)`
       );
 
       const embed = new EmbedBuilder()
@@ -796,7 +703,7 @@ client.on("messageCreate", async (msg) => {
       return msg.reply({ embeds: [embed] });
     }
 
-    // ---- Rank card (MEE6-style) ----
+    // ---- Rank card ----
     if (cmd === "rank" || cmd === "card") {
       const u = msg.mentions.users.first() || msg.author;
       const member = await msg.guild.members.fetch(u.id).catch(() => null);
@@ -843,6 +750,7 @@ client.on("messageCreate", async (msg) => {
       return msg.reply({ embeds: [embed] });
     }
 
+    // ---- Verification flow ----
     if (cmd === "getcode") {
       const code = makeCode();
       pending.set(msg.author.id, code);
@@ -963,98 +871,11 @@ client.on("messageCreate", async (msg) => {
     console.error("messageCreate error:", err);
   }
 });
-// ====== SLASH COMMANDS HANDLER ======
-client.on("interactionCreate", async (interaction) => {
-  try {
-    if (!interaction.isChatInputCommand()) return;
-
-    const name = interaction.commandName;
-
-    // /xp
-    if (name === "xp") {
-      await interaction.deferReply({ ephemeral: false }).catch(() => {});
-      const u = interaction.options.getUser("user") || interaction.user;
-
-      const userObj = ensureXpUser(u.id);
-      const needed = xpNeeded(userObj.level);
-      const prestige = Number(userObj.prestige || 0);
-
-      const prestigeLine = prestige > 0 ? `⭐ Prestige: **${prestige}**\n` : "";
-
-      return interaction.editReply(
-        `📈 <@${u.id}>\n` +
-          `${prestigeLine}` +
-          `Level: **${userObj.level}**\n` +
-          `XP: **${userObj.xp}/${needed}**`
-      );
-    }
-
-    // /leaderboard
-    if (name === "leaderboard") {
-      await interaction.deferReply({ ephemeral: false }).catch(() => {});
-
-      const entries = Object.entries(xpData.users || {})
-        .map(([uid, u]) => ({
-          uid,
-          prestige: Number(u.prestige || 0),
-          level: Number(u.level) || 1,
-          xp: Number(u.xp) || 0,
-        }))
-        .sort((a, b) => (b.prestige - a.prestige) || (b.level - a.level) || (b.xp - a.xp))
-        .slice(0, 20);
-
-      if (!entries.length) return interaction.editReply("No XP data yet.");
-
-      const lines = entries.map((x, i) => {
-        const p = x.prestige > 0 ? ` ⭐P${x.prestige}` : "";
-        return `**${i + 1}.** <@${x.uid}> — **Lvl ${x.level}**${p} (${x.xp}xp)`;
-      });
-
-      const embed = new EmbedBuilder()
-        .setTitle("🏆 XP Leaderboard")
-        .setDescription(lines.join("\n"))
-        .setColor(0x5865f2)
-        .setTimestamp();
-
-      return interaction.editReply({ embeds: [embed] });
-    }
-
-    // /rank
-    if (name === "rank") {
-      await interaction.deferReply({ ephemeral: false }).catch(() => {});
-      const u = interaction.options.getUser("user") || interaction.user;
-
-      const member = await interaction.guild.members.fetch(u.id).catch(() => null);
-      if (!member) return interaction.editReply("Couldn't fetch that member.");
-
-      const userObj = ensureXpUser(u.id);
-
-      const buf = await generateRankCard(member, userObj).catch((e) => {
-        console.error("rank card error:", e);
-        return null;
-      });
-      if (!buf) return interaction.editReply("Failed to generate rank card.");
-
-      const att = new AttachmentBuilder(buf, { name: "rank.png" });
-      return interaction.editReply({ files: [att] });
-    }
-  } catch (err) {
-    console.error("interactionCreate error:", err);
-    if (interaction?.isRepliable?.()) {
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply("❌ Something went wrong.").catch(() => {});
-      } else {
-        await interaction.reply({ content: "❌ Something went wrong.", ephemeral: true }).catch(() => {});
-      }
-    }
-  }
-});
 
 // ====== LOGIN (exactly once) ======
-const token = (process.env.DISCORD_TOKEN || "").trim();
+const token = String(process.env.DISCORD_TOKEN || "").trim();
 if (!token) {
   console.error("❌ No DISCORD_TOKEN set in environment variables.");
   process.exit(1);
 }
 client.login(token).catch(console.error);
-
