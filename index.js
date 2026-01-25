@@ -7,7 +7,11 @@ const {
   EmbedBuilder,
   AttachmentBuilder,
   PermissionsBitField,
+  REST,
+  Routes,
+  SlashCommandBuilder,
 } = require("discord.js");
+
 const path = require("path");
 const fs = require("fs");
 const { createCanvas, loadImage } = require("canvas");
@@ -23,6 +27,10 @@ const OLD_ROLE_TO_REMOVE = "Unverified";
 const VERIFY_CHANNEL_ID = "1462386529765691473";
 const LOG_CHANNEL_ID = "1456955298597175391";
 const WELCOME_CHANNEL_ID = "1456962809425559613";
+
+// ====== SLASH COMMANDS (for /xp /leaderboard /rank) ======
+const CLIENT_ID = process.env.CLIENT_ID || "1462214316332679355"; // your bot application ID
+const GUILD_ID = process.env.GUILD_ID || "1456735416156819578";   // your server ID (guild) for fast updates
 
 // ====== XP / LEVELING CONFIG ======
 const XP_FILE = path.join(__dirname, "xp.json");
@@ -291,19 +299,68 @@ client.on("guildMemberAdd", async (member) => {
     console.error("welcome send error:", err?.message || err);
   }
 });
+async function registerSlashCommands() {
+  if (!CLIENT_ID) {
+    console.warn("⚠️ CLIENT_ID missing. Slash commands will NOT register.");
+    return;
+  }
+  if (!GUILD_ID) {
+    console.warn("⚠️ GUILD_ID missing. Slash commands will NOT register.");
+    return;
+  }
+
+  const commands = [
+    new SlashCommandBuilder()
+      .setName("xp")
+      .setDescription("Show your (or someone else's) XP + level.")
+      .addUserOption((opt) =>
+        opt.setName("user").setDescription("User to check").setRequired(false)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("leaderboard")
+      .setDescription("Show the XP leaderboard (top 20)."),
+
+    new SlashCommandBuilder()
+      .setName("rank")
+      .setDescription("Generate a rank card.")
+      .addUserOption((opt) =>
+        opt.setName("user").setDescription("User to generate for").setRequired(false)
+      ),
+  ].map((c) => c.toJSON());
+
+  const token = String(process.env.DISCORD_TOKEN || "").trim();
+  if (!token) {
+    console.warn("⚠️ DISCORD_TOKEN missing. Slash commands will NOT register.");
+    return;
+  }
+
+  const rest = new REST({ version: "10" }).setToken(token);
+
+  try {
+    console.log("🔧 Registering slash commands...");
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+    console.log("✅ Slash commands registered.");
+  } catch (e) {
+    console.error("❌ Slash command registration failed:", e);
+  }
+}
 
 client.on("guildMemberRemove", (member) => {
   sendLogEmbed(member.guild, leaveEmbed(member));
 });
 
 // ====== READY ======
-client.once("clientReady", async () => {
+client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+
+  await registerSlashCommands();
 
   for (const guild of client.guilds.cache.values()) {
     await cacheGuildInvites(guild);
   }
 });
+
 
 // ===================== CHUNK 3/4 =====================
 // ====== XP / LEVELING STORAGE ======
@@ -904,6 +961,92 @@ client.on("messageCreate", async (msg) => {
     }
   } catch (err) {
     console.error("messageCreate error:", err);
+  }
+});
+// ====== SLASH COMMANDS HANDLER ======
+client.on("interactionCreate", async (interaction) => {
+  try {
+    if (!interaction.isChatInputCommand()) return;
+
+    const name = interaction.commandName;
+
+    // /xp
+    if (name === "xp") {
+      await interaction.deferReply({ ephemeral: false }).catch(() => {});
+      const u = interaction.options.getUser("user") || interaction.user;
+
+      const userObj = ensureXpUser(u.id);
+      const needed = xpNeeded(userObj.level);
+      const prestige = Number(userObj.prestige || 0);
+
+      const prestigeLine = prestige > 0 ? `⭐ Prestige: **${prestige}**\n` : "";
+
+      return interaction.editReply(
+        `📈 <@${u.id}>\n` +
+          `${prestigeLine}` +
+          `Level: **${userObj.level}**\n` +
+          `XP: **${userObj.xp}/${needed}**`
+      );
+    }
+
+    // /leaderboard
+    if (name === "leaderboard") {
+      await interaction.deferReply({ ephemeral: false }).catch(() => {});
+
+      const entries = Object.entries(xpData.users || {})
+        .map(([uid, u]) => ({
+          uid,
+          prestige: Number(u.prestige || 0),
+          level: Number(u.level) || 1,
+          xp: Number(u.xp) || 0,
+        }))
+        .sort((a, b) => (b.prestige - a.prestige) || (b.level - a.level) || (b.xp - a.xp))
+        .slice(0, 20);
+
+      if (!entries.length) return interaction.editReply("No XP data yet.");
+
+      const lines = entries.map((x, i) => {
+        const p = x.prestige > 0 ? ` ⭐P${x.prestige}` : "";
+        return `**${i + 1}.** <@${x.uid}> — **Lvl ${x.level}**${p} (${x.xp}xp)`;
+      });
+
+      const embed = new EmbedBuilder()
+        .setTitle("🏆 XP Leaderboard")
+        .setDescription(lines.join("\n"))
+        .setColor(0x5865f2)
+        .setTimestamp();
+
+      return interaction.editReply({ embeds: [embed] });
+    }
+
+    // /rank
+    if (name === "rank") {
+      await interaction.deferReply({ ephemeral: false }).catch(() => {});
+      const u = interaction.options.getUser("user") || interaction.user;
+
+      const member = await interaction.guild.members.fetch(u.id).catch(() => null);
+      if (!member) return interaction.editReply("Couldn't fetch that member.");
+
+      const userObj = ensureXpUser(u.id);
+
+      const buf = await generateRankCard(member, userObj).catch((e) => {
+        console.error("rank card error:", e);
+        return null;
+      });
+      if (!buf) return interaction.editReply("Failed to generate rank card.");
+
+      const att = new AttachmentBuilder(buf, { name: "rank.png" });
+      return interaction.editReply({ files: [att] });
+    }
+  } catch (err) {
+    console.error("interactionCreate error:", err);
+    if (interaction?.isRepliable?.()) {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply("❌ Something went wrong.").catch(() => {});
+      } else {
+        await interaction.reply({ content: "❌ Something went wrong.", ephemeral: true }).catch(() => {});
+      }
+    }
   }
 });
 
