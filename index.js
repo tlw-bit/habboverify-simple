@@ -297,8 +297,10 @@ client.on("guildMemberRemove", (member) => {
 });
 
 // ====== READY ======
-client.once("ready", async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+client.once('clientReady', () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
+
   for (const guild of client.guilds.cache.values()) {
     await cacheGuildInvites(guild);
   }
