@@ -305,12 +305,6 @@ client.once("clientReady", async () => {
   }
 });
 
-  // Cache invites for all guilds on startup
-  for (const guild of client.guilds.cache.values()) {
-    await cacheGuildInvites(guild);
-  }
-});
-
 // ===================== CHUNK 3/4 =====================
 // ====== XP / LEVELING STORAGE ======
 function loadXpDataSafe() {
@@ -477,44 +471,46 @@ async function generateRankCard(member, userObj) {
   ctx.font = "bold 34px Sans";
   ctx.fillText(user.username, 220, 108);
 
- // Tag line + Prestige badge
-const prestige = Number(userObj.prestige || 0);
+  // Tag line + Prestige badge
+  const prestige = Number(userObj.prestige || 0);
 
-const rowX = 220;
-const rowY = 140;
+  const rowX = 220;
+  const rowY = 140;
 
-// Prestige pill (hide it if prestige is 0)
-let afterPillX = rowX;
+  // where the "restText" should start drawing
+  let afterPillX = rowX;
 
-if (prestige > 0) {
-  const pillH = 26;
-  const pillY = rowY - 18;
-  const prestigeText = `⭐ PRESTIGE ${prestige}`;
+  if (prestige > 0) {
+    const pillH = 26;
+    const pillY = rowY - 18;
+    const prestigeText = `⭐ PRESTIGE ${prestige}`;
 
-  ctx.font = "bold 14px Sans";
-  const textPadX = 14;
-  const pillW = Math.max(
-    120,
-    Math.ceil(ctx.measureText(prestigeText).width) + textPadX * 2
-  );
+    ctx.font = "bold 14px Sans";
+    const textPadX = 14;
 
-  drawPill(ctx, rowX, pillY, pillW, pillH, "#111827", accent);
+    const pillW = Math.max(
+      120,
+      Math.ceil(ctx.measureText(prestigeText).width) + textPadX * 2
+    );
 
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "bold 14px Sans";
-  ctx.fillText(prestigeText, rowX + textPadX, pillY + 18);
+    drawPill(ctx, rowX, pillY, pillW, pillH, "#111827", accent);
 
-  ctx.fillText(restText, afterPillX, rowY);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 14px Sans";
+    ctx.fillText(prestigeText, rowX + textPadX, pillY + 18);
 
+    afterPillX = rowX + pillW + 16;
+  }
 
-// Rest of line
-const restText = `Level ${userObj.level} • ${userObj.xp}/${needed} XP`;
-const maxRestWidth = width - 36 - afterPillX - 20;
-const restSize = fitText(ctx, restText, maxRestWidth, 18, "Sans");
+  // Rest of line
+  const restText = `Level ${userObj.level} • ${userObj.xp}/${needed} XP`;
+  const maxRestWidth = width - 36 - afterPillX - 20;
+  const restSize = fitText(ctx, restText, maxRestWidth, 18, "Sans");
 
   ctx.fillStyle = "#94a3b8";
   ctx.font = `${restSize}px Sans`;
-  ctx.fillText(restText, rowX + pillW + 16, rowY);
+  ctx.fillText(restText, afterPillX, rowY);
+
 
   // Global rank + invites
   ctx.fillStyle = "#e5e7eb";
