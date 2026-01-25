@@ -157,11 +157,13 @@ function verifiedEmbed(userId, habboName) {
   return new EmbedBuilder()
     .setTitle("🛎️ Check-in Complete")
     .setColor(0x57f287)
- .addFields(
-  { name: "User", value: `<@${userId}>`, inline: true },
-  { name: "Habbo Guest", value: habboName, inline: true }
+    .addFields(
+      { name: "User", value: `<@${userId}>`, inline: true },
+      { name: "Habbo Guest", value: habboName, inline: true }
+    )
+    .setTimestamp();
+}
 
-.setTimestamp();
 
 
 function joinEmbed(member) {
