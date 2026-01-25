@@ -499,8 +499,8 @@ if (prestige > 0) {
   ctx.font = "bold 14px Sans";
   ctx.fillText(prestigeText, rowX + textPadX, pillY + 18);
 
-  afterPillX = rowX + pillW + 16;
-}
+  ctx.fillText(restText, afterPillX, rowY);
+
 
 // Rest of line
 const restText = `Level ${userObj.level} • ${userObj.xp}/${needed} XP`;
