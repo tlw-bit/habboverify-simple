@@ -144,7 +144,6 @@ async function fetchHabboMotto(name) {
     clearTimeout(t);
   }
 }
-
 // ====== LOG EMBEDS ======
 function sendLogEmbed(guild, embed) {
   if (!LOG_CHANNEL_ID) return;
@@ -164,20 +163,14 @@ function verifiedEmbed(userId, habboName) {
     .setTimestamp();
 }
 
-
-
 function joinEmbed(member) {
   return new EmbedBuilder()
     .setTitle("✅ Member Joined")
     .setColor(0x57f287)
     .setDescription(`<@${member.user.id}> joined the server.`)
-   function verifiedEmbed(userId, habboName) {
-  return new EmbedBuilder()
-    .setTitle("🛎️ Check-in Complete")
-    .setColor(0x57f287)
     .addFields(
-      { name: "User", value: `<@${userId}>`, inline: true },
-      { name: "Habbo Guest", value: habboName, inline: true }
+      { name: "User", value: member.user.tag, inline: true },
+      { name: "ID", value: member.user.id, inline: true }
     )
     .setTimestamp();
 }
