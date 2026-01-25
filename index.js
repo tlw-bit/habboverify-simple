@@ -159,10 +159,11 @@ function verifiedEmbed(userId, habboName) {
     .setColor(0x57f287)
     .addFields(
       { name: "User", value: `<@${userId}>`, inline: true },
-    { name: "Habbo Guest", value: habboName, inline: true }
-
+      { name: "Habbo Guest", value: habboName, inline: true }
+    )
     .setTimestamp();
 }
+
 
 function joinEmbed(member) {
   return new EmbedBuilder()
@@ -356,7 +357,7 @@ function randInt(min, max) {
 }
 
 // ====== SLASH COMMAND: /level ONLY ======
-client.on("interactionCreate", async (interaction) => {
+client.on("messageCreate", async (msg) => {
   try {
     if (!interaction.isChatInputCommand()) return;
     if (interaction.commandName !== "level") return;
