@@ -297,14 +297,15 @@ client.on("guildMemberRemove", (member) => {
 });
 
 // ====== READY ======
-client.once('clientReady', () => {
-  console.log(`Logged in as ${client.user.tag}`);
-});
+client.once("clientReady", async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
 
+  // Cache invites for all guilds on startup
   for (const guild of client.guilds.cache.values()) {
     await cacheGuildInvites(guild);
   }
 });
+
 // ===================== CHUNK 3/4 =====================
 // ====== XP / LEVELING STORAGE ======
 function loadXpDataSafe() {
