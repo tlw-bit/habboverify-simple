@@ -42,7 +42,7 @@ const PRESTIGE_AT_LEVEL = 50; // prestige when reaching this level
 const PRESTIGE_RESET_LEVEL = 1; // new level after prestige
 const PRESTIGE_RESET_XP = 0; // xp after prestige
 
-// Where to announce level-ups. Leave "" to announce in the same channel.
+// Where to announce level-ups (optional). Leave "" to announce in same channel.
 const LEVEL_UP_CHANNEL_ID = "1456967580299559066";
 
 // Optional level roles: level -> roleId
@@ -100,7 +100,6 @@ const pending = new Map();
 function makeCode() {
   return "verify-" + Math.random().toString(36).slice(2, 8).toUpperCase();
 }
-
 async function fetchHabboMotto(name) {
   const base = "https://www.habbo.com";
   const url = `${base}/api/public/users?name=${encodeURIComponent(name)}`;
@@ -114,7 +113,7 @@ async function fetchHabboMotto(name) {
       headers: {
         Accept: "application/json",
         "User-Agent":
-         "Mozilla/5.0 (ConciergeBot; +https://discord.com) ConciergeBot/1.0",
+          "Mozilla/5.0 (ConciergeBot; +https://discord.com) ConciergeBot/1.0",
         Referer: "https://www.habbo.com/",
       },
     });
@@ -132,6 +131,7 @@ async function fetchHabboMotto(name) {
       }
       if (res.status === 404) throw new Error("Habbo user not found on habbo.com.");
       if (res.status === 429) throw new Error("Too many requests. Try again in a moment.");
+
       throw new Error(`Habbo API error (${res.status}).`);
     }
 
@@ -144,6 +144,7 @@ async function fetchHabboMotto(name) {
     clearTimeout(t);
   }
 }
+
 // ====== LOG EMBEDS ======
 function sendLogEmbed(guild, embed) {
   if (!LOG_CHANNEL_ID) return;
@@ -196,7 +197,6 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
   ],
 });
-
 // ====== INVITE CACHE (guildId -> Map(code -> uses)) ======
 const invitesCache = new Map();
 
@@ -221,6 +221,7 @@ client.on("inviteDelete", async (invite) => {
   await cacheGuildInvites(invite.guild);
 });
 
+// ====== JOIN / LEAVE + INVITE DETECTION + WELCOME ======
 client.on("guildMemberAdd", async (member) => {
   sendLogEmbed(member.guild, joinEmbed(member));
 
@@ -270,12 +271,11 @@ client.on("guildMemberAdd", async (member) => {
       : `👤 **Invited by:** _(unknown)_`;
 
     const embed = new EmbedBuilder()
-      .setTitle("🏨 Welcome to the Hotel's hideout!")
-
+      .setTitle("🏨 Welcome to the Hotel Lobby!")
       .setDescription(
-        `Welcome to the server, <@${member.id}>!\n\n` +
+        `Welcome, <@${member.id}>.\n\n` +
           `${invitedLine}\n\n` +
-          `Please head to <#${VERIFY_CHANNEL_ID}> to check in and get started.`
+          `Please head to <#${VERIFY_CHANNEL_ID}> to **check in** and get started.`
       )
       .setColor(0x2ecc71)
       .setThumbnail(member.user.displayAvatarURL())
@@ -349,33 +349,6 @@ function randInt(min, max) {
   const b = Math.floor(max);
   return Math.floor(Math.random() * (b - a + 1)) + a;
 }
-
-// ====== SLASH COMMAND: /level ONLY ======
-client.on("messageCreate", async (msg) => {
-  try {
-    if (!interaction.isChatInputCommand()) return;
-    if (interaction.commandName !== "level") return;
-
-    const u = interaction.options.getUser("user") || interaction.user;
-    const userObj = ensureXpUser(u.id);
-    const needed = xpNeeded(userObj.level);
-
-    return interaction.reply(
-      `🛎️ <@${u.id}> is **Status ${userObj.level}**` +
-        (userObj.prestige ? ` (⭐ Prestige **${userObj.prestige}**)` : "") +
-        `\nReputation: **${userObj.xp}/${needed}**`
-    );
-  } catch (err) {
-    console.error("interactionCreate /level error:", err);
-    if (interaction.isRepliable() && !interaction.replied) {
-      await interaction
-        .reply({ content: "Something went wrong 😬", ephemeral: true })
-        .catch(() => {});
-    }
-  }
-});
-
-
 // Global rank: order by level desc, then xp desc
 function getGlobalRank(userId) {
   const entries = Object.entries(xpData.users || {})
@@ -496,7 +469,6 @@ async function generateRankCard(member, userObj) {
 
     ctx.font = "bold 14px Sans";
     const textPadX = 14;
-
     const pillW = Math.max(120, Math.ceil(ctx.measureText(prestigeText).width) + textPadX * 2);
 
     drawPill(ctx, rowX, pillY, pillW, pillH, "#111827", accent);
@@ -508,7 +480,7 @@ async function generateRankCard(member, userObj) {
     afterPillX = rowX + pillW + 16;
   }
 
- const restText = `Status ${userObj.level} • ${userObj.xp}/${needed} Rep`;
+  const restText = `Status ${userObj.level} • ${userObj.xp}/${needed} Rep`;
   const maxRestWidth = width - 36 - afterPillX - 20;
   const restSize = fitText(ctx, restText, maxRestWidth, 18, "Sans");
 
@@ -520,7 +492,6 @@ async function generateRankCard(member, userObj) {
   ctx.font = "18px Sans";
   ctx.fillText(`🏆 #${rank} / ${total}`, 220, 172);
   ctx.fillText(`🎟️ Referrals: ${invites}`, 220, 198);
-
 
   const barX = 220;
   const barY = 220;
@@ -542,7 +513,6 @@ async function generateRankCard(member, userObj) {
 
   return canvas.toBuffer();
 }
-
 // ====== LEVEL ROLES + ANNOUNCEMENTS ======
 function getLevelRolePairsSorted(guild) {
   return Object.entries(LEVEL_ROLES)
@@ -621,7 +591,7 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
       userObj.level = PRESTIGE_RESET_LEVEL;
       userObj.xp = PRESTIGE_RESET_XP;
 
-      // announce the level 50 "final form" line
+      // announce the level 50 line
       await announceLevelUp(guild, channel, userDiscord, PRESTIGE_AT_LEVEL).catch(() => {});
 
       // prestige message
@@ -654,7 +624,30 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
   }
 }
 
-// ====== COMMANDS + XP ======
+// ====== SLASH COMMAND: /level ONLY ======
+client.on("interactionCreate", async (interaction) => {
+  try {
+    if (!interaction.isChatInputCommand()) return;
+    if (interaction.commandName !== "level") return;
+
+    const u = interaction.options.getUser("user") || interaction.user;
+    const userObj = ensureXpUser(u.id);
+    const needed = xpNeeded(userObj.level);
+
+    return interaction.reply(
+      `🛎️ <@${u.id}> is **Status ${userObj.level}**` +
+        (userObj.prestige ? ` (⭐ Prestige **${userObj.prestige}**)` : "") +
+        `\nReputation: **${userObj.xp}/${needed}**`
+    );
+  } catch (err) {
+    console.error("interactionCreate /level error:", err);
+    if (interaction.isRepliable() && !interaction.replied) {
+      await interaction.reply({ content: "Something went wrong 😬", ephemeral: true }).catch(() => {});
+    }
+  }
+});
+
+// ====== COMMANDS + XP (PREFIX) ======
 client.on("messageCreate", async (msg) => {
   try {
     if (msg.author.bot) return;
@@ -698,8 +691,8 @@ client.on("messageCreate", async (msg) => {
       const needed = xpNeeded(userObj.level);
 
       return msg.reply(
-       `🛎️ <@${u.id}> is **Status ${userObj.level}** (⭐ Prestige **${userObj.prestige || 0}**)\n` +
-  `Reputation: **${userObj.xp}/${needed}**`
+        `🛎️ <@${u.id}> is **Status ${userObj.level}** (⭐ Prestige **${userObj.prestige || 0}**)\n` +
+          `Reputation: **${userObj.xp}/${needed}**`
       );
     }
 
@@ -717,12 +710,11 @@ client.on("messageCreate", async (msg) => {
       if (!entries.length) return msg.reply("No XP data yet.");
 
       const lines = entries.map(
-        (x, i) =>
-          `**${i + 1}.** <@${x.uid}> — **P${x.prestige} Lvl ${x.level}** (${x.xp}xp)`
+        (x, i) => `**${i + 1}.** <@${x.uid}> — **P${x.prestige} Lvl ${x.level}** (${x.xp}xp)`
       );
 
       const embed = new EmbedBuilder()
-        .setTitle("🏆 XP Leaderboard")
+        .setTitle("🏆 Reputation Leaderboard")
         .setDescription(lines.join("\n"))
         .setColor(0x5865f2)
         .setTimestamp();
@@ -754,7 +746,7 @@ client.on("messageCreate", async (msg) => {
     if (cmd === "invites") {
       const user = msg.mentions.users.first() || msg.author;
       const count = invitesData.counts[user.id] || 0;
-      return msg.reply(`📨 <@${user.id}> has **${count}** invite(s).`);
+      return msg.reply(`🎟️ <@${user.id}> has **${count}** referral(s).`);
     }
 
     if (cmd === "invleaderboard" || cmd === "inviteleaderboard") {
@@ -764,12 +756,12 @@ client.on("messageCreate", async (msg) => {
         .sort((a, b) => b.count - a.count)
         .slice(0, 25);
 
-      if (!entries.length) return msg.reply("No invites tracked yet.");
+      if (!entries.length) return msg.reply("No referrals tracked yet.");
 
       const lines = entries.map((x, i) => `**${i + 1}.** <@${x.uid}> — **${x.count}**`);
 
       const embed = new EmbedBuilder()
-        .setTitle("🏆 Invite Leaderboard")
+        .setTitle("🏆 Referral Leaderboard")
         .setDescription(lines.join("\n"))
         .setColor(0x5865f2)
         .setTimestamp();
@@ -784,14 +776,14 @@ client.on("messageCreate", async (msg) => {
 
       try {
         await msg.author.send(
-          `✅ Your verification code is: **${code}**\n\n` +
-            `Now set your Habbo motto to include that code, then come back and type:\n` +
+          `🛎️ Your check-in code is: **${code}**\n\n` +
+            `Set your Habbo motto to include that code, then come back and type:\n` +
             `\`${PREFIX}verify YourHabboName\``
         );
-        return msg.reply("📩 I’ve sent your code in DMs! Check your messages.");
+        return msg.reply("📩 I’ve DM’d your code. Check your messages!");
       } catch {
         return msg.reply(
-          "❌ I couldn’t DM you. Please turn on **Allow direct messages** for this server, then try again."
+          "❌ I couldn’t DM you. Turn on **Allow direct messages** for this server, then try again."
         );
       }
     }
@@ -814,16 +806,16 @@ client.on("messageCreate", async (msg) => {
       const attachment = new AttachmentBuilder(imagePath, { name: "verify-guide.png" });
 
       const embed = new EmbedBuilder()
-        .setTitle("🔐 Server Verification")
+        .setTitle("🔐 Hotel Check-in")
         .setDescription(
           [
             "Follow these steps to get verified:",
             "",
-            "💬 **Type:** `!getcode`",
+            `💬 **Type:** \`${PREFIX}getcode\``,
             "📩 **Check your DMs** for your code",
             "📝 **Change your Habbo motto** to the code",
             `➡️ **Head to:** <#${VERIFY_CHANNEL_ID}>`,
-            "✅ **Say:** `!verify (your habbo name)`",
+            `✅ **Say:** \`${PREFIX}verify (your habbo name)\``,
             "",
             "🎉 **Done!**",
           ].join("\n")
@@ -835,10 +827,10 @@ client.on("messageCreate", async (msg) => {
 
       try {
         await sent.pin();
-        return msg.reply("✅ Posted + pinned the verification instructions in #verify.");
+        return msg.reply("✅ Posted + pinned the instructions in the verification channel.");
       } catch {
         return msg.reply(
-          "✅ Posted the verification message, but I couldn't pin it (need **Manage Messages**)."
+          "✅ Posted the message, but I couldn't pin it (need **Manage Messages**)."
         );
       }
     }
@@ -889,7 +881,7 @@ client.on("messageCreate", async (msg) => {
         pending.delete(msg.author.id);
 
         sendLogEmbed(msg.guild, verifiedEmbed(msg.author.id, name));
-        return msg.reply("✅ You are verified!");
+        return msg.reply("✅ Check-in complete. You’re verified!");
       } catch (err) {
         return msg.reply(`Verification failed: ${err.message}`);
       }
