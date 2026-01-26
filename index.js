@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 console.log("Bot starting...");
 
 const {
