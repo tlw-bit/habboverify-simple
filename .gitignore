@@ -1,2 +1,6 @@
-node_modules
+node
+whoami.js
+deploy-commands.js
+dockerfile.dockerfile
 .env
+node_modules
