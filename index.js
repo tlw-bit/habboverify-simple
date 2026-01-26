@@ -625,6 +625,51 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
     if (member) await applyLevelRoles(member, userObj.level).catch(() => {});
   }
 }
+// ====== MESSAGE CREATE (XP AWARDING) ======
+client.on("messageCreate", async (message) => {
+  try {
+    if (!message.guild) return;          // no XP in DMs
+    if (message.author.bot) return;      // no XP for bots
+
+    // Channel eligibility
+    if (!shouldAwardXp(message.channelId)) return;
+
+    // 5+ word requirement
+    const words = message.content.trim().split(/\s+/).filter(Boolean);
+    if (words.length < 5) return;
+
+    const userId = message.author.id;
+    const userObj = ensureXpUser(userId);
+
+    // Cooldown
+    const now = Date.now();
+    const last = Number(userObj.lastXpAt || 0);
+    const cooldownMs = XP_COOLDOWN_SECONDS * 1000;
+    if (now - last < cooldownMs) return;
+
+    // Award XP
+    const gained = randInt(XP_MIN, XP_MAX);
+    userObj.xp += gained;
+    userObj.lastXpAt = now;
+
+    saveXpData(xpData);
+
+    // Level-ups + roles
+    const member = await message.guild.members.fetch(userId).catch(() => null);
+
+    await processLevelUps({
+      guild: message.guild,
+      channel: message.channel,
+      userObj,
+      userDiscord: message.author,
+      member,
+    }).catch(() => {});
+
+    saveXpData(xpData);
+  } catch (err) {
+    console.error("messageCreate XP error:", err?.message || err);
+  }
+});
 
 // ====== SLASH COMMANDS ======
 client.on("interactionCreate", async (interaction) => {
@@ -636,6 +681,112 @@ client.on("interactionCreate", async (interaction) => {
     // /ping
     if (cmd === "ping") {
       return interaction.reply("pong ✅");
+    }
+
+    // /xpinfo
+    if (cmd === "xpinfo") {
+      const avg = Math.round((XP_MIN + XP_MAX) / 2);
+
+      const blocked =
+        (XP_BLOCKED_CHANNEL_IDS || []).map((id) => `<#${id}>`).join(", ") || "None";
+
+      const allowed =
+        XP_ALLOWED_CHANNEL_IDS.length > 0
+          ? XP_ALLOWED_CHANNEL_IDS.map((id) => `<#${id}>`).join(", ")
+          : "All channels (except blocked)";
+
+      const embed = new EmbedBuilder()
+        .setTitle("📈 XP Info")
+        .setColor(0x5865f2)
+        .setDescription(
+          `⏱️ **Cooldown:** 1 award every **${XP_COOLDOWN_SECONDS}s** per user\n` +
+            `🎲 **XP per award:** **${XP_MIN}–${XP_MAX}** (avg ~${avg})\n` +
+            `🗣️ **Minimum message:** **5+ words**\n` +
+            `✅ **XP allowed in:** ${allowed}\n` +
+            `🚫 **XP blocked in:** ${blocked}\n\n` +
+            `📊 **XP needed per level:** \`100 + (level - 1) * 50\`\n` +
+            `⭐ **Prestige:** at **Level ${PRESTIGE_AT_LEVEL}** (resets to Level ${PRESTIGE_RESET_LEVEL})`
+        )
+        .setTimestamp();
+
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    // /xpadmin
+    if (cmd === "xpadmin") {
+      const perms = interaction.memberPermissions;
+      const isAllowed =
+        perms?.has(PermissionsBitField.Flags.Administrator) ||
+        perms?.has(PermissionsBitField.Flags.ManageGuild);
+
+      if (!isAllowed) {
+        return interaction.reply({
+          content: "❌ You don’t have permission to use this.",
+          ephemeral: true,
+        });
+      }
+
+      const action = interaction.options.getSubcommand(true);
+      const targetUser = interaction.options.getUser("user", true);
+      const amount = interaction.options.getInteger("amount") ?? 0;
+
+      const targetObj = ensureXpUser(targetUser.id);
+
+      if (action === "give") {
+        if (amount <= 0)
+          return interaction.reply({ content: "Amount must be > 0.", ephemeral: true });
+        targetObj.xp += amount;
+      }
+
+      if (action === "take") {
+        if (amount <= 0)
+          return interaction.reply({ content: "Amount must be > 0.", ephemeral: true });
+        targetObj.xp = Math.max(0, targetObj.xp - amount);
+      }
+
+      if (action === "set") {
+        if (amount < 0)
+          return interaction.reply({ content: "Amount can’t be negative.", ephemeral: true });
+        targetObj.xp = amount;
+      }
+
+      if (action === "reset") {
+        targetObj.xp = 0;
+        targetObj.level = 1;
+        targetObj.prestige = 0;
+        targetObj.lastXpAt = 0;
+      }
+
+      saveXpData(xpData);
+
+      const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+
+      // If give/set might push over thresholds, process level-ups
+      if (action === "give" || action === "set") {
+        await processLevelUps({
+          guild: interaction.guild,
+          channel: interaction.channel,
+          userObj: targetObj,
+          userDiscord: targetUser,
+          member,
+        }).catch(() => {});
+      }
+
+      // Re-apply level roles (useful after reset)
+      if (member) {
+        await applyLevelRoles(member, targetObj.level).catch(() => {});
+      }
+
+      saveXpData(xpData);
+
+      const needed = xpNeeded(targetObj.level);
+
+      return interaction.reply({
+        content:
+          `✅ Updated <@${targetUser.id}>.\n` +
+          `⭐ Prestige: **${targetObj.prestige || 0}** | Level: **${targetObj.level}** | XP: **${targetObj.xp}/${needed}**`,
+        ephemeral: true,
+      });
     }
 
     // /level
@@ -796,10 +947,13 @@ client.on("interactionCreate", async (interaction) => {
   } catch (err) {
     console.error("interactionCreate error:", err);
     if (interaction.isRepliable() && !interaction.replied) {
-      await interaction.reply({ content: "Something went wrong 😬", ephemeral: true }).catch(() => {});
+      await interaction
+        .reply({ content: "Something went wrong 😬", ephemeral: true })
+        .catch(() => {});
     }
   }
 });
+
 
 // ====== LOGIN (exactly once) ======
 const token = String(process.env.DISCORD_TOKEN || "").trim();
