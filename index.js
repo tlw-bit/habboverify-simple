@@ -624,79 +624,61 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
   }
 }
 
-// ====== SLASH COMMAND: /level ONLY ======
+// ====== SLASH COMMANDS ======
 client.on("interactionCreate", async (interaction) => {
   try {
     if (!interaction.isChatInputCommand()) return;
-    if (interaction.commandName !== "level") return;
 
-    const u = interaction.options.getUser("user") || interaction.user;
-    const userObj = ensureXpUser(u.id);
-    const needed = xpNeeded(userObj.level);
+    const cmd = interaction.commandName;
 
-    return interaction.reply(
-      `🛎️ <@${u.id}> is **Status ${userObj.level}**` +
-        (userObj.prestige ? ` (⭐ Prestige **${userObj.prestige}**)` : "") +
-        `\nReputation: **${userObj.xp}/${needed}**`
-    );
-  } catch (err) {
-    console.error("interactionCreate /level error:", err);
-    if (interaction.isRepliable() && !interaction.replied) {
-      await interaction.reply({ content: "Something went wrong 😬", ephemeral: true }).catch(() => {});
-    }
-  }
-});
-
-// ====== COMMANDS + XP (PREFIX) ======
-client.on("messageCreate", async (msg) => {
-  try {
-    if (msg.author.bot) return;
-    if (!msg.guild) return;
-
-    const isCommand = msg.content.startsWith(PREFIX);
-
-    // XP awarding (non-command messages)
-    if (!isCommand && shouldAwardXp(msg.channel.id)) {
-      const userObj = ensureXpUser(msg.author.id);
-      const now = Date.now();
-
-      if (now - (userObj.lastXpAt || 0) >= XP_COOLDOWN_SECONDS * 1000) {
-        const gained = randInt(XP_MIN, XP_MAX);
-        userObj.lastXpAt = now;
-        userObj.xp += gained;
-
-        const member = await msg.guild.members.fetch(msg.author.id).catch(() => null);
-
-        await processLevelUps({
-          guild: msg.guild,
-          channel: msg.channel,
-          userObj,
-          userDiscord: msg.author,
-          member,
-        });
-
-        saveXpData(xpData);
-      }
+    // /ping
+    if (cmd === "ping") {
+      return interaction.reply("pong ✅");
     }
 
-    if (!isCommand) return;
-
-    const args = msg.content.slice(PREFIX.length).trim().split(/\s+/);
-    const cmd = (args.shift() || "").toLowerCase();
-
-    // ---- XP commands ----
-    if (cmd === "level" || cmd === "xp") {
-      const u = msg.mentions.users.first() || msg.author;
+    // /level
+    if (cmd === "level") {
+      const u = interaction.options.getUser("user") || interaction.user;
       const userObj = ensureXpUser(u.id);
       const needed = xpNeeded(userObj.level);
 
-      return msg.reply(
-        `🛎️ <@${u.id}> is **Status ${userObj.level}** (⭐ Prestige **${userObj.prestige || 0}**)\n` +
-          `Reputation: **${userObj.xp}/${needed}**`
+      return interaction.reply(
+        `🛎️ <@${u.id}> is **Status ${userObj.level}**` +
+          (userObj.prestige ? ` (⭐ Prestige **${userObj.prestige}**)` : "") +
+          `\nReputation: **${userObj.xp}/${needed}**`
       );
     }
 
-    if (cmd === "xpleaderboard" || cmd === "lblevel") {
+    // /invites
+    if (cmd === "invites") {
+      const u = interaction.options.getUser("user") || interaction.user;
+      const count = invitesData.counts[u.id] || 0;
+      return interaction.reply(`🎟️ <@${u.id}> has **${count}** referral(s).`);
+    }
+
+    // /invleaderboard
+    if (cmd === "invleaderboard") {
+      const entries = Object.entries(invitesData.counts || {})
+        .map(([uid, count]) => ({ uid, count: Number(count) || 0 }))
+        .filter((x) => x.count > 0)
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 25);
+
+      if (!entries.length) return interaction.reply("No referrals tracked yet.");
+
+      const lines = entries.map((x, i) => `**${i + 1}.** <@${x.uid}> — **${x.count}**`);
+
+      const embed = new EmbedBuilder()
+        .setTitle("🏆 Referral Leaderboard")
+        .setDescription(lines.join("\n"))
+        .setColor(0x5865f2)
+        .setTimestamp();
+
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    // /xpleaderboard
+    if (cmd === "xpleaderboard") {
       const entries = Object.entries(xpData.users || {})
         .map(([uid, u]) => ({
           uid,
@@ -707,7 +689,7 @@ client.on("messageCreate", async (msg) => {
         .sort((a, b) => (b.prestige - a.prestige) || (b.level - a.level) || (b.xp - a.xp))
         .slice(0, 20);
 
-      if (!entries.length) return msg.reply("No XP data yet.");
+      if (!entries.length) return interaction.reply("No XP data yet.");
 
       const lines = entries.map(
         (x, i) => `**${i + 1}.** <@${x.uid}> — **P${x.prestige} Lvl ${x.level}** (${x.xp}xp)`
@@ -719,14 +701,16 @@ client.on("messageCreate", async (msg) => {
         .setColor(0x5865f2)
         .setTimestamp();
 
-      return msg.reply({ embeds: [embed] });
+      return interaction.reply({ embeds: [embed] });
     }
 
-    // ---- Rank card ----
-    if (cmd === "rank" || cmd === "card") {
-      const u = msg.mentions.users.first() || msg.author;
-      const member = await msg.guild.members.fetch(u.id).catch(() => null);
-      if (!member) return msg.reply("Couldn't fetch that member.");
+    // /rank (this can take time, so defer)
+    if (cmd === "rank") {
+      await interaction.deferReply();
+
+      const u = interaction.options.getUser("user") || interaction.user;
+      const member = await interaction.guild.members.fetch(u.id).catch(() => null);
+      if (!member) return interaction.editReply("Couldn't fetch that member.");
 
       const userObj = ensureXpUser(u.id);
 
@@ -734,160 +718,84 @@ client.on("messageCreate", async (msg) => {
         console.error("rank card error:", e);
         return null;
       });
-      if (!buf) return msg.reply("Failed to generate rank card.");
+      if (!buf) return interaction.editReply("Failed to generate rank card.");
 
       const att = new AttachmentBuilder(buf, { name: "rank.png" });
-      return msg.reply({ files: [att] });
+      return interaction.editReply({ files: [att] });
     }
 
-    // ---- Other commands ----
-    if (cmd === "ping") return msg.reply("pong ✅");
-
-    if (cmd === "invites") {
-      const user = msg.mentions.users.first() || msg.author;
-      const count = invitesData.counts[user.id] || 0;
-      return msg.reply(`🎟️ <@${user.id}> has **${count}** referral(s).`);
-    }
-
-    if (cmd === "invleaderboard" || cmd === "inviteleaderboard") {
-      const entries = Object.entries(invitesData.counts || {})
-        .map(([uid, count]) => ({ uid, count: Number(count) || 0 }))
-        .filter((x) => x.count > 0)
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 25);
-
-      if (!entries.length) return msg.reply("No referrals tracked yet.");
-
-      const lines = entries.map((x, i) => `**${i + 1}.** <@${x.uid}> — **${x.count}**`);
-
-      const embed = new EmbedBuilder()
-        .setTitle("🏆 Referral Leaderboard")
-        .setDescription(lines.join("\n"))
-        .setColor(0x5865f2)
-        .setTimestamp();
-
-      return msg.reply({ embeds: [embed] });
-    }
-
-    // ---- Verification flow ----
+    // /getcode
     if (cmd === "getcode") {
       const code = makeCode();
-      pending.set(msg.author.id, code);
+      pending.set(interaction.user.id, code);
 
       try {
-        await msg.author.send(
+        await interaction.user.send(
           `🛎️ Your check-in code is: **${code}**\n\n` +
-            `Set your Habbo motto to include that code, then come back and type:\n` +
-            `\`${PREFIX}verify YourHabboName\``
+            `Set your Habbo motto to include that code, then run:\n` +
+            `\`/verify habbo:YourHabboName\``
         );
-        return msg.reply("📩 I’ve DM’d your code. Check your messages!");
+        return interaction.reply({ content: "📩 I’ve DM’d your code!", ephemeral: true });
       } catch {
-        return msg.reply(
-          "❌ I couldn’t DM you. Turn on **Allow direct messages** for this server, then try again."
-        );
+        return interaction.reply({
+          content:
+            "❌ I couldn’t DM you. Turn on **Allow direct messages** for this server, then try again.",
+          ephemeral: true,
+        });
       }
     }
 
-    if (cmd === "verifymsg") {
-      if (!msg.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
-        return msg.reply("❌ You need **Manage Server** to post the verification message.");
-      }
+    // /verify
+    if (cmd === "verify") {
+      await interaction.deferReply({ ephemeral: true });
 
-      const channel = msg.guild.channels.cache.get(VERIFY_CHANNEL_ID);
-      if (!channel || !channel.isTextBased()) {
-        return msg.reply("❌ I can't find the verification channel. Check VERIFY_CHANNEL_ID.");
-      }
-
-      const imagePath = path.join(__dirname, "assets", "verify-guide.png");
-      if (!fs.existsSync(imagePath)) {
-        return msg.reply("❌ Image not found. Put it in `assets/verify-guide.png`.");
-      }
-
-      const attachment = new AttachmentBuilder(imagePath, { name: "verify-guide.png" });
-
-      const embed = new EmbedBuilder()
-        .setTitle("🔐 Hotel Check-in")
-        .setDescription(
-          [
-            "Follow these steps to get verified:",
-            "",
-            `💬 **Type:** \`${PREFIX}getcode\``,
-            "📩 **Check your DMs** for your code",
-            "📝 **Change your Habbo motto** to the code",
-            `➡️ **Head to:** <#${VERIFY_CHANNEL_ID}>`,
-            `✅ **Say:** \`${PREFIX}verify (your habbo name)\``,
-            "",
-            "🎉 **Done!**",
-          ].join("\n")
-        )
-        .setImage("attachment://verify-guide.png")
-        .setColor(0x5865f2);
-
-      const sent = await channel.send({ embeds: [embed], files: [attachment] });
-
-      try {
-        await sent.pin();
-        return msg.reply("✅ Posted + pinned the instructions in the verification channel.");
-      } catch {
-        return msg.reply(
-          "✅ Posted the message, but I couldn't pin it (need **Manage Messages**)."
-        );
-      }
-    }
-
-    if (cmd === "verify" || cmd === "verifiy") {
-      const name = args.join(" ").trim();
-      if (!name) return msg.reply(`Usage: ${PREFIX}verify YourHabboName`);
-
-      const code = pending.get(msg.author.id);
-      if (!code) return msg.reply(`Use \`${PREFIX}getcode\` first.`);
-
-      await msg.reply("Checking your Habbo motto...");
+      const name = interaction.options.getString("habbo", true).trim();
+      const code = pending.get(interaction.user.id);
+      if (!code) return interaction.editReply(`Use \`/getcode\` first.`);
 
       try {
         const motto = await fetchHabboMotto(name);
 
-        if (!motto) {
-          return msg.reply(
-            `I found the account, but the motto came back empty.\n` +
-              `Make sure the motto is set and try again in 10–30 seconds.`
-          );
-        }
-
         const norm = (s) => (s || "").trim().replace(/\s+/g, " ");
         if (!norm(motto).includes(norm(code))) {
-          return msg.reply(
+          return interaction.editReply(
             `Motto doesn't match yet.\n` +
               `Expected to include: **${code}**\n` +
               `Found motto: **${motto || "(empty)"}**\n\n` +
-              `Tip: wait 10-30 seconds after changing your motto, then try again.`
+              `Tip: wait 10–30 seconds after changing your motto, then try again.`
           );
         }
 
-        const member = await msg.guild.members.fetch(msg.author.id);
+        const member = await interaction.guild.members.fetch(interaction.user.id);
 
-        const verifiedRole = msg.guild.roles.cache.find((r) => r.name === VERIFIED_ROLE);
-        if (!verifiedRole) return msg.reply("Verified role not found.");
+        const verifiedRole = interaction.guild.roles.cache.find((r) => r.name === VERIFIED_ROLE);
+        if (!verifiedRole) return interaction.editReply("Verified role not found.");
 
         await member.roles.add(verifiedRole);
 
-        const oldRole = msg.guild.roles.cache.find((r) => r.name === OLD_ROLE_TO_REMOVE);
+        const oldRole = interaction.guild.roles.cache.find((r) => r.name === OLD_ROLE_TO_REMOVE);
         if (oldRole) await member.roles.remove(oldRole).catch(() => {});
 
         if (member.manageable) {
           await member.setNickname(name.slice(0, 32)).catch(() => {});
         }
 
-        pending.delete(msg.author.id);
+        pending.delete(interaction.user.id);
 
-        sendLogEmbed(msg.guild, verifiedEmbed(msg.author.id, name));
-        return msg.reply("✅ Check-in complete. You’re verified!");
+        sendLogEmbed(interaction.guild, verifiedEmbed(interaction.user.id, name));
+        return interaction.editReply("✅ Check-in complete. You’re verified!");
       } catch (err) {
-        return msg.reply(`Verification failed: ${err.message}`);
+        return interaction.editReply(`Verification failed: ${err.message}`);
       }
     }
+
+    // If a command exists but isn't handled:
+    return interaction.reply({ content: "Command not wired up yet 😬", ephemeral: true });
   } catch (err) {
-    console.error("messageCreate error:", err);
+    console.error("interactionCreate error:", err);
+    if (interaction.isRepliable() && !interaction.replied) {
+      await interaction.reply({ content: "Something went wrong 😬", ephemeral: true }).catch(() => {});
+    }
   }
 });
 
