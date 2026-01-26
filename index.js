@@ -941,6 +941,42 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply(`Verification failed: ${err.message}`);
       }
     }
+    // /verifymsg (post + pin verification instructions)
+if (cmd === "verifymsg") {
+  const perms = interaction.memberPermissions;
+  const isAllowed =
+    perms?.has(PermissionsBitField.Flags.Administrator) ||
+    perms?.has(PermissionsBitField.Flags.ManageGuild);
+
+  if (!isAllowed) {
+    return interaction.reply({ content: "❌ You don’t have permission to use this.", ephemeral: true });
+  }
+
+  // Post in the current channel
+  const ch = interaction.channel;
+  if (!ch || !ch.isTextBased()) {
+    return interaction.reply({ content: "❌ Can't post in this channel.", ephemeral: true });
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle("🛎️ Hotel Check-in")
+    .setColor(0x5865f2)
+    .setDescription(
+      `1) Run **/getcode** to receive your check-in code in DMs.\n` +
+      `2) Set your **Habbo motto** to include that code.\n` +
+      `3) Run **/verify habbo:YourHabboName** here to get verified.\n\n` +
+      `If your motto just updated, wait **10–30 seconds** and try again.`
+    )
+    .setTimestamp();
+
+  const msg = await ch.send({ embeds: [embed] }).catch(() => null);
+  if (!msg) return interaction.reply({ content: "❌ Failed to post the message.", ephemeral: true });
+
+  // Pin it
+  await msg.pin().catch(() => {});
+  return interaction.reply({ content: "✅ Posted and pinned the verification instructions.", ephemeral: true });
+}
+
 
     // If a command exists but isn't handled:
     return interaction.reply({ content: "Command not wired up yet 😬", ephemeral: true });
