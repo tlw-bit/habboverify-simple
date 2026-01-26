@@ -1,13 +1,9 @@
-// deploy-commands.js
+// deploy-commands.js (Discord.js v14)
 require("dotenv").config();
-const {
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  PermissionFlagsBits,
-} = require("discord.js");
+const { REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 
 const commands = [
+  // ----- XP / Ranks -----
   new SlashCommandBuilder()
     .setName("level")
     .setDescription("Show level/xp for you or someone else")
@@ -30,6 +26,7 @@ const commands = [
     .setName("xpleaderboard")
     .setDescription("Show the XP leaderboard"),
 
+  // ----- Invites -----
   new SlashCommandBuilder()
     .setName("invites")
     .setDescription("Show invite count for you or someone else")
@@ -43,10 +40,7 @@ const commands = [
     .setName("invleaderboard")
     .setDescription("Show the invite leaderboard"),
 
-  new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("pong ✅"),
-
+  // ----- Verification -----
   new SlashCommandBuilder()
     .setName("getcode")
     .setDescription("DM me a verification code"),
@@ -64,25 +58,28 @@ const commands = [
     .setName("verifymsg")
     .setDescription("Post + pin verification instructions (admin)")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-].map(cmd => cmd.toJSON());
 
-const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+  // ----- Utility -----
+  new SlashCommandBuilder()
+    .setName("ping")
+    .setDescription("pong ✅"),
+].map(c => c.toJSON());
+
+const token = String(process.env.DISCORD_TOKEN || "").trim();
+const clientId = String(process.env.CLIENT_ID || "").trim();
+const guildId = String(process.env.GUILD_ID || "").trim();
+
+if (!token) throw new Error("Missing DISCORD_TOKEN in .env");
+if (!clientId) throw new Error("Missing CLIENT_ID in .env");
+if (!guildId) throw new Error("Missing GUILD_ID in .env");
+
+const rest = new REST({ version: "10" }).setToken(token);
 
 (async () => {
   try {
-    const clientId = process.env.CLIENT_ID; // Application ID
-    const guildId = process.env.GUILD_ID;   // Server ID
-
-    if (!clientId || !guildId) {
-      throw new Error("Missing CLIENT_ID or GUILD_ID environment variables.");
-    }
-
-    console.log("🚀 Deploying slash commands...");
-    await rest.put(
-      Routes.applicationGuildCommands(clientId, guildId),
-      { body: commands }
-    );
-    console.log("✅ Slash commands deployed successfully.");
+    console.log("🚀 Deploying Concierge guild commands (overwrites the list)...");
+    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+    console.log("✅ Done. Commands are now: /level /rank /xpleaderboard /invites /invleaderboard /getcode /verify /verifymsg /ping");
   } catch (err) {
     console.error("❌ Failed to deploy commands:", err);
   }
