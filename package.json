@@ -9,7 +9,8 @@
     "node": "18.x"
   },
   "dependencies": {
+    "canvas": "^2.11.2",
     "discord.js": "^14.25.1",
-    "canvas": "^2.11.2"
+    "dotenv": "^17.2.3"
   }
 }
