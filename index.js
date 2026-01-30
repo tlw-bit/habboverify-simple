@@ -8,6 +8,7 @@ const {
   EmbedBuilder,
   AttachmentBuilder,
   PermissionsBitField,
+  MessageFlags,
 } = require("discord.js");
 
 const path = require("path");
@@ -100,9 +101,11 @@ let invitesData = loadInvitesDataSafe();
 
 // ====== VERIFICATION PENDING CODES (GLOBAL) ======
 const pending = new Map();
+
 function makeCode() {
   return "verify-" + Math.random().toString(36).slice(2, 8).toUpperCase();
 }
+
 async function fetchHabboMotto(name) {
   const base = "https://www.habbo.com";
   const url = `${base}/api/public/users?name=${encodeURIComponent(name)}`;
@@ -200,6 +203,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
   ],
 });
+
 // ====== INVITE CACHE (guildId -> Map(code -> uses)) ======
 const invitesCache = new Map();
 
@@ -224,9 +228,31 @@ client.on("inviteDelete", async (invite) => {
   await cacheGuildInvites(invite.guild);
 });
 
-// ====== JOIN / LEAVE + INVITE DETECTION + WELCOME ======
+// ====== JOIN / LEAVE + INVITE DETECTION + WELCOME + UNVERIFIED ROLE ======
 client.on("guildMemberAdd", async (member) => {
   sendLogEmbed(member.guild, joinEmbed(member));
+
+  // ✅ Give Unverified role on join
+  try {
+    const me = member.guild.members.me;
+    if (me?.permissions?.has(PermissionsBitField.Flags.ManageRoles)) {
+      const role =
+        member.guild.roles.cache.get(UNVERIFIED_ROLE_ID) ||
+        member.guild.roles.cache.find((r) => r.name === OLD_ROLE_TO_REMOVE); // "Unverified"
+
+      if (!role) {
+        console.warn("⚠️ Unverified role not found.");
+      } else if (me.roles.highest.position <= role.position) {
+        console.warn("⚠️ Bot role must be ABOVE Unverified in the role list.");
+      } else if (!member.roles.cache.has(role.id)) {
+        await member.roles.add(role).catch(() => {});
+      }
+    } else {
+      console.warn("⚠️ Missing ManageRoles permission; can't assign Unverified.");
+    }
+  } catch (e) {
+    console.warn("⚠️ Failed to assign Unverified:", e?.message || e);
+  }
 
   let inviterId = null;
   let inviteCodeUsed = null;
@@ -297,30 +323,6 @@ client.on("guildMemberAdd", async (member) => {
 client.on("guildMemberRemove", (member) => {
   sendLogEmbed(member.guild, leaveEmbed(member));
 });
-client.on("guildMemberAdd", async (member) => {
-  sendLogEmbed(member.guild, joinEmbed(member));
-
-  // ✅ Give Unverified role on join
-  try {
-    const me = member.guild.members.me;
-    const canManageRoles = me?.permissions?.has(PermissionsBitField.Flags.ManageRoles);
-    if (!canManageRoles) return;
-
-    const unverifiedRole = member.guild.roles.cache.find(
-      (r) => r.name === OLD_ROLE_TO_REMOVE // "Unverified"
-    );
-
-    if (!unverifiedRole) {
-      console.warn("⚠️ Unverified role not found.");
-    } else if (me.roles.highest.position <= unverifiedRole.position) {
-      console.warn("⚠️ Bot role must be ABOVE Unverified in the role list.");
-    } else {
-      await member.roles.add(unverifiedRole).catch(() => {});
-    }
-  } catch (e) {
-    console.warn("⚠️ Failed to assign Unverified role:", e?.message || e);
-  }
-});
 
 // ====== READY ======
 client.once("ready", async () => {
@@ -328,34 +330,6 @@ client.once("ready", async () => {
 
   for (const guild of client.guilds.cache.values()) {
     await cacheGuildInvites(guild);
-  }
-});
-client.on("guildMemberAdd", async (member) => {
-  try {
-    // Make sure the bot can manage roles
-    const me = member.guild.members.me;
-    if (!me?.permissions?.has(PermissionsBitField.Flags.ManageRoles)) return;
-
-    const role = member.guild.roles.cache.get(UNVERIFIED_ROLE_ID)
-      || member.guild.roles.cache.find((r) => r.name === "Unverified");
-
-    if (!role) {
-      console.warn("⚠️ Unverified role not found.");
-      return;
-    }
-
-    // Bot's top role must be higher than the role it is assigning
-    if (me.roles.highest.position <= role.position) {
-      console.warn("⚠️ Bot role must be ABOVE Unverified in the role list.");
-      return;
-    }
-
-    // Don’t re-add if they already have it
-    if (!member.roles.cache.has(role.id)) {
-      await member.roles.add(role).catch(() => {});
-    }
-  } catch (e) {
-    console.warn("⚠️ Failed to assign Unverified:", e?.message || e);
   }
 });
 
@@ -404,11 +378,12 @@ function randInt(min, max) {
   const b = Math.floor(max);
   return Math.floor(Math.random() * (b - a + 1)) + a;
 }
+
 // Global rank: order by level desc, then xp desc
 function getGlobalRank(userId) {
   const entries = Object.entries(xpData.users || {})
     .map(([uid, u]) => ({ uid, level: Number(u.level) || 1, xp: Number(u.xp) || 0 }))
-    .sort((a, b) => (b.level - a.level) || (b.xp - a.xp));
+    .sort((a, b) => b.level - a.level || b.xp - a.xp);
 
   const total = entries.length || 1;
   const idx = entries.findIndex((x) => x.uid === userId);
@@ -568,14 +543,12 @@ async function generateRankCard(member, userObj) {
 
   return canvas.toBuffer();
 }
+
 // ====== LEVEL ROLES + ANNOUNCEMENTS ======
 function getLevelRolePairsSorted(guild) {
   return Object.entries(LEVEL_ROLES)
     .map(([lvl, roleId]) => ({ lvl: Number(lvl), roleId: String(roleId) }))
-    .filter(
-      (x) =>
-        Number.isFinite(x.lvl) && x.lvl > 0 && x.roleId && guild.roles.cache.get(x.roleId)
-    )
+    .filter((x) => Number.isFinite(x.lvl) && x.lvl > 0 && x.roleId && guild.roles.cache.get(x.roleId))
     .sort((a, b) => a.lvl - b.lvl);
 }
 
@@ -678,11 +651,12 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
     if (member) await applyLevelRoles(member, userObj.level).catch(() => {});
   }
 }
+
 // ====== MESSAGE CREATE (XP AWARDING) ======
 client.on("messageCreate", async (message) => {
   try {
-    if (!message.guild) return;          // no XP in DMs
-    if (message.author.bot) return;      // no XP for bots
+    if (!message.guild) return; // no XP in DMs
+    if (message.author.bot) return; // no XP for bots
 
     // Channel eligibility
     if (!shouldAwardXp(message.channelId)) return;
@@ -762,7 +736,7 @@ client.on("interactionCreate", async (interaction) => {
         )
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
     // /xpadmin
@@ -775,7 +749,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!isAllowed) {
         return interaction.reply({
           content: "❌ You don’t have permission to use this.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -787,19 +761,19 @@ client.on("interactionCreate", async (interaction) => {
 
       if (action === "give") {
         if (amount <= 0)
-          return interaction.reply({ content: "Amount must be > 0.", ephemeral: true });
+          return interaction.reply({ content: "Amount must be > 0.", flags: MessageFlags.Ephemeral });
         targetObj.xp += amount;
       }
 
       if (action === "take") {
         if (amount <= 0)
-          return interaction.reply({ content: "Amount must be > 0.", ephemeral: true });
+          return interaction.reply({ content: "Amount must be > 0.", flags: MessageFlags.Ephemeral });
         targetObj.xp = Math.max(0, targetObj.xp - amount);
       }
 
       if (action === "set") {
         if (amount < 0)
-          return interaction.reply({ content: "Amount can’t be negative.", ephemeral: true });
+          return interaction.reply({ content: "Amount can’t be negative.", flags: MessageFlags.Ephemeral });
         targetObj.xp = amount;
       }
 
@@ -838,7 +812,7 @@ client.on("interactionCreate", async (interaction) => {
         content:
           `✅ Updated <@${targetUser.id}>.\n` +
           `⭐ Prestige: **${targetObj.prestige || 0}** | Level: **${targetObj.level}** | XP: **${targetObj.xp}/${needed}**`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
@@ -892,7 +866,7 @@ client.on("interactionCreate", async (interaction) => {
           prestige: Number(u.prestige) || 0,
           xp: Number(u.xp) || 0,
         }))
-        .sort((a, b) => (b.prestige - a.prestige) || (b.level - a.level) || (b.xp - a.xp))
+        .sort((a, b) => b.prestige - a.prestige || b.level - a.level || b.xp - a.xp)
         .slice(0, 20);
 
       if (!entries.length) return interaction.reply("No XP data yet.");
@@ -930,33 +904,31 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.editReply({ files: [att] });
     }
 
-    // /getcode
- if (cmd === "getcode") {
-  // IMPORTANT: you already deferred above, so don't reply() again
+    // /getcode (DM + ephemeral reply)
+    if (cmd === "getcode") {
+      const code = makeCode();
+      pending.set(interaction.user.id, code);
 
-  const code = makeCode();
-  pending.set(interaction.user.id, code);
+      try {
+        await interaction.user.send(
+          `🛎️ **Your check-in code is:** \`${code}\`\n\n` +
+            `Set your **Habbo motto** to include that code, then go back to <#${VERIFY_CHANNEL_ID}> and type:\n` +
+            `\`/verify habbo:YourHabboNameSe\``
+        );
 
-  try {
-    await interaction.user.send(
-      `🛎️ Your check-in code is: **${code}**\n\n` +
-      `Set your Habbo motto to include that code, then run:\n` +
-      `\`/verify habbo:YourHabboName\``
-    );
-
-    // Use editReply because we deferred
-    return interaction.editReply({ content: "📩 I’ve DM’d your code!" });
-  } catch {
-    return interaction.editReply({
-      content:
-        "❌ I couldn’t DM you. Turn on **Allow direct messages** for this server, then try again.",
-    });
-  }
-}
+        return interaction.reply({ content: "📩 I’ve DM’d your code!", flags: MessageFlags.Ephemeral });
+      } catch {
+        return interaction.reply({
+          content:
+            "❌ I couldn’t DM you. Turn on **Allow direct messages** for this server, then try again.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+    }
 
     // /verify
     if (cmd === "verify") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const name = interaction.options.getString("habbo", true).trim();
       const code = pending.get(interaction.user.id);
@@ -980,9 +952,11 @@ client.on("interactionCreate", async (interaction) => {
         const verifiedRole = interaction.guild.roles.cache.find((r) => r.name === VERIFIED_ROLE);
         if (!verifiedRole) return interaction.editReply("Verified role not found.");
 
-        await member.roles.add(verifiedRole);
+        await member.roles.add(verifiedRole).catch(() => {});
 
-        const oldRole = interaction.guild.roles.cache.find((r) => r.name === OLD_ROLE_TO_REMOVE);
+        const oldRole =
+          interaction.guild.roles.cache.get(UNVERIFIED_ROLE_ID) ||
+          interaction.guild.roles.cache.find((r) => r.name === OLD_ROLE_TO_REMOVE);
         if (oldRole) await member.roles.remove(oldRole).catch(() => {});
 
         if (member.manageable) {
@@ -997,55 +971,68 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply(`Verification failed: ${err.message}`);
       }
     }
+
     // /verifymsg (post + pin verification instructions)
-if (cmd === "verifymsg") {
-  const perms = interaction.memberPermissions;
-  const isAllowed =
-    perms?.has(PermissionsBitField.Flags.Administrator) ||
-    perms?.has(PermissionsBitField.Flags.ManageGuild);
+    if (cmd === "verifymsg") {
+      const perms = interaction.memberPermissions;
+      const isAllowed =
+        perms?.has(PermissionsBitField.Flags.Administrator) ||
+        perms?.has(PermissionsBitField.Flags.ManageGuild);
 
-  if (!isAllowed) {
-    return interaction.reply({ content: "❌ You don’t have permission to use this.", ephemeral: true });
-  }
+      if (!isAllowed) {
+        return interaction.reply({
+          content: "❌ You don’t have permission to use this.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
 
-  // Post in the current channel
-  const ch = interaction.channel;
-  if (!ch || !ch.isTextBased()) {
-    return interaction.reply({ content: "❌ Can't post in this channel.", ephemeral: true });
-  }
+      const ch = interaction.channel;
+      if (!ch || !ch.isTextBased()) {
+        return interaction.reply({
+          content: "❌ Can't post in this channel.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
 
-  const embed = new EmbedBuilder()
-    .setTitle("🛎️ Hotel Check-in")
-    .setColor(0x5865f2)
-    .setDescription(
-      `1) Run **/getcode** to receive your check-in code in DMs.\n` +
-      `2) Set your **Habbo motto** to include that code.\n` +
-      `3) Run **/verify habbo:YourHabboName** here to get verified.\n\n` +
-      `If your motto just updated, wait **10–30 seconds** and try again.`
-    )
-    .setTimestamp();
+      const embed = new EmbedBuilder()
+        .setTitle("🛎️ Hotel Check-in")
+        .setColor(0x5865f2)
+        .setDescription(
+          `1) Run **/getcode** to receive your check-in code in DMs.\n` +
+            `2) Set your **Habbo motto** to include that code.\n` +
+            `3) Run **/verify habbo:YourHabboNameSe** here to get verified.\n\n` +
+            `If your motto just updated, wait **10–30 seconds** and try again.`
+        )
+        .setTimestamp();
 
-  const msg = await ch.send({ embeds: [embed] }).catch(() => null);
-  if (!msg) return interaction.reply({ content: "❌ Failed to post the message.", ephemeral: true });
+      const msg = await ch.send({ embeds: [embed] }).catch(() => null);
+      if (!msg)
+        return interaction.reply({
+          content: "❌ Failed to post the message.",
+          flags: MessageFlags.Ephemeral,
+        });
 
-  // Pin it
-  await msg.pin().catch(() => {});
-  return interaction.reply({ content: "✅ Posted and pinned the verification instructions.", ephemeral: true });
-}
-
+      await msg.pin().catch(() => {});
+      return interaction.reply({
+        content: "✅ Posted and pinned the verification instructions.",
+        flags: MessageFlags.Ephemeral,
+      });
+    }
 
     // If a command exists but isn't handled:
-    return interaction.reply({ content: "Command not wired up yet 😬", ephemeral: true });
+    return interaction.reply({
+      content: "Command not wired up yet 😬",
+      flags: MessageFlags.Ephemeral,
+    });
   } catch (err) {
     console.error("interactionCreate error:", err);
-    if (interaction.isRepliable() && !interaction.replied) {
+    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
       await interaction
-        .reply({ content: "Something went wrong 😬", ephemeral: true })
+        .reply({ content: "Something went wrong 😬", flags: MessageFlags.Ephemeral })
         .catch(() => {});
     }
   }
 });
-
 
 // ====== LOGIN (exactly once) ======
 const token = String(process.env.DISCORD_TOKEN || "").trim();
