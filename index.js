@@ -23,6 +23,7 @@ const PREFIX = "!";
 const VERIFIED_ROLE = "Verified";
 const OLD_ROLE_TO_REMOVE = "Unverified";
 
+const UNVERIFIED_ROLE_ID = "1457150062382682243";
 const VERIFY_CHANNEL_ID = "1462386529765691473";
 const LOG_CHANNEL_ID = "1456955298597175391";
 const WELCOME_CHANNEL_ID = "1456962809425559613";
@@ -296,6 +297,30 @@ client.on("guildMemberAdd", async (member) => {
 client.on("guildMemberRemove", (member) => {
   sendLogEmbed(member.guild, leaveEmbed(member));
 });
+client.on("guildMemberAdd", async (member) => {
+  sendLogEmbed(member.guild, joinEmbed(member));
+
+  // ✅ Give Unverified role on join
+  try {
+    const me = member.guild.members.me;
+    const canManageRoles = me?.permissions?.has(PermissionsBitField.Flags.ManageRoles);
+    if (!canManageRoles) return;
+
+    const unverifiedRole = member.guild.roles.cache.find(
+      (r) => r.name === OLD_ROLE_TO_REMOVE // "Unverified"
+    );
+
+    if (!unverifiedRole) {
+      console.warn("⚠️ Unverified role not found.");
+    } else if (me.roles.highest.position <= unverifiedRole.position) {
+      console.warn("⚠️ Bot role must be ABOVE Unverified in the role list.");
+    } else {
+      await member.roles.add(unverifiedRole).catch(() => {});
+    }
+  } catch (e) {
+    console.warn("⚠️ Failed to assign Unverified role:", e?.message || e);
+  }
+});
 
 // ====== READY ======
 client.once("ready", async () => {
@@ -303,6 +328,34 @@ client.once("ready", async () => {
 
   for (const guild of client.guilds.cache.values()) {
     await cacheGuildInvites(guild);
+  }
+});
+client.on("guildMemberAdd", async (member) => {
+  try {
+    // Make sure the bot can manage roles
+    const me = member.guild.members.me;
+    if (!me?.permissions?.has(PermissionsBitField.Flags.ManageRoles)) return;
+
+    const role = member.guild.roles.cache.get(UNVERIFIED_ROLE_ID)
+      || member.guild.roles.cache.find((r) => r.name === "Unverified");
+
+    if (!role) {
+      console.warn("⚠️ Unverified role not found.");
+      return;
+    }
+
+    // Bot's top role must be higher than the role it is assigning
+    if (me.roles.highest.position <= role.position) {
+      console.warn("⚠️ Bot role must be ABOVE Unverified in the role list.");
+      return;
+    }
+
+    // Don’t re-add if they already have it
+    if (!member.roles.cache.has(role.id)) {
+      await member.roles.add(role).catch(() => {});
+    }
+  } catch (e) {
+    console.warn("⚠️ Failed to assign Unverified:", e?.message || e);
   }
 });
 
