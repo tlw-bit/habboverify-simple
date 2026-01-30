@@ -931,25 +931,28 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     // /getcode
-    if (cmd === "getcode") {
-      const code = makeCode();
-      pending.set(interaction.user.id, code);
+ if (cmd === "getcode") {
+  // IMPORTANT: you already deferred above, so don't reply() again
 
-      try {
-        await interaction.user.send(
-          `🛎️ Your check-in code is: **${code}**\n\n` +
-            `Set your Habbo motto to include that code, then run:\n` +
-            `\`/verify habbo:YourHabboName\``
-        );
-        return interaction.reply({ content: "📩 I’ve DM’d your code!", ephemeral: true });
-      } catch {
-        return interaction.reply({
-          content:
-            "❌ I couldn’t DM you. Turn on **Allow direct messages** for this server, then try again.",
-          ephemeral: true,
-        });
-      }
-    }
+  const code = makeCode();
+  pending.set(interaction.user.id, code);
+
+  try {
+    await interaction.user.send(
+      `🛎️ Your check-in code is: **${code}**\n\n` +
+      `Set your Habbo motto to include that code, then run:\n` +
+      `\`/verify habbo:YourHabboName\``
+    );
+
+    // Use editReply because we deferred
+    return interaction.editReply({ content: "📩 I’ve DM’d your code!" });
+  } catch {
+    return interaction.editReply({
+      content:
+        "❌ I couldn’t DM you. Turn on **Allow direct messages** for this server, then try again.",
+    });
+  }
+}
 
     // /verify
     if (cmd === "verify") {
