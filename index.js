@@ -30,7 +30,7 @@ const LOG_CHANNEL_ID = "1456955298597175391";
 const WELCOME_CHANNEL_ID = "1456962809425559613";
 
 // ====== XP / LEVELING CONFIG ======
-const XP_FILE = path.join(__dirname, "xp.json");
+const XP_FILE = process.env.XP_FILE || path.join(__dirname, "xp.json");
 
 // If you want XP only in specific channels, put IDs here. Leave [] to allow everywhere.
 const XP_ALLOWED_CHANNEL_IDS = []; // e.g. ["123", "456"]
@@ -46,8 +46,10 @@ const PRESTIGE_AT_LEVEL = 50; // prestige when reaching this level
 const PRESTIGE_RESET_LEVEL = 1; // new level after prestige
 const PRESTIGE_RESET_XP = 0; // xp after prestige
 
-// Where to announce level-ups (optional). Leave "" to announce in same channel.
-const LEVEL_UP_CHANNEL_ID = "1456967580299559066";
+// Where to announce bot updates (level ups/prestige). Leave "" to announce in same channel.
+const BOT_CHAT_CHANNEL_ID =
+  process.env.BOT_CHAT_CHANNEL_ID || "1456952227909603408";
+const LEVEL_UP_CHANNEL_ID = BOT_CHAT_CHANNEL_ID || "1456967580299559066";
 
 // Optional level roles: level -> roleId
 const LEVEL_ROLES = {
