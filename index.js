@@ -49,7 +49,13 @@ const PRESTIGE_RESET_XP = 0; // xp after prestige
 // Where to announce bot updates (level ups/prestige). Leave "" to announce in same channel.
 const BOT_CHAT_CHANNEL_ID =
   process.env.BOT_CHAT_CHANNEL_ID || "1456952227909603408";
-const LEVEL_UP_CHANNEL_ID = BOT_CHAT_CHANNEL_ID || "1456967580299559066";
+const LEVEL_UP_CHANNEL_ID =
+  process.env.LEVEL_UP_CHANNEL_ID || "1456967580299559066";
+const WEEKLY_LEADERBOARD_CHANNEL_ID =
+  process.env.WEEKLY_LEADERBOARD_CHANNEL_ID || LEVEL_UP_CHANNEL_ID || BOT_CHAT_CHANNEL_ID;
+
+const GIVEAWAY_ROLE_ID = process.env.GIVEAWAY_ROLE_ID || "";
+const HABBO_GAMES_ROLE_ID = process.env.HABBO_GAMES_ROLE_ID || "";
 
 // Optional level roles: level -> roleId
 const LEVEL_ROLES = {
@@ -84,14 +90,29 @@ const DEFAULT_ACCENT = "#5865f2";
 // ====== INVITE TRACKING STORAGE ======
 const INVITES_FILE = path.join(__dirname, "invites.json");
 
+function getWeekKeyUTC(date = new Date()) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = d.getUTCDay();
+  const diffToMonday = (day + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - diffToMonday);
+  return d.toISOString().slice(0, 10);
+}
+
 function loadInvitesDataSafe() {
-  if (!fs.existsSync(INVITES_FILE)) return { counts: {} };
+  if (!fs.existsSync(INVITES_FILE)) {
+    return { counts: {}, weeklyCounts: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
+  }
   try {
     const parsed = JSON.parse(fs.readFileSync(INVITES_FILE, "utf8"));
     if (!parsed.counts) parsed.counts = {};
+    if (!parsed.weeklyCounts) parsed.weeklyCounts = {};
+    if (!parsed.weeklyMeta || typeof parsed.weeklyMeta !== "object") {
+      parsed.weeklyMeta = { weekKey: getWeekKeyUTC() };
+    }
+    if (!parsed.weeklyMeta.weekKey) parsed.weeklyMeta.weekKey = getWeekKeyUTC();
     return parsed;
   } catch {
-    return { counts: {} };
+    return { counts: {}, weeklyCounts: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
   }
 }
 
@@ -196,6 +217,28 @@ function leaveEmbed(member) {
     .setTimestamp();
 }
 
+async function assignPostVerifyRoles(member) {
+  if (!member?.guild) return;
+
+  const roleIds = [GIVEAWAY_ROLE_ID, HABBO_GAMES_ROLE_ID]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+
+  if (!roleIds.length) return;
+
+  const me = member.guild.members.me;
+  if (!me?.permissions?.has(PermissionsBitField.Flags.ManageRoles)) return;
+
+  for (const roleId of roleIds) {
+    const role = member.guild.roles.cache.get(roleId);
+    if (!role) continue;
+    if (me.roles.highest.position <= role.position) continue;
+    if (!member.roles.cache.has(role.id)) {
+      await member.roles.add(role).catch(() => {});
+    }
+  }
+}
+
 // ====== CLIENT ======
 const client = new Client({
   intents: [
@@ -282,7 +325,9 @@ client.on("guildMemberAdd", async (member) => {
       inviterId = usedInvite.inviter.id;
       inviteCodeUsed = usedInvite.code;
 
+      maybeRollWeeklyData();
       invitesData.counts[inviterId] = (invitesData.counts[inviterId] || 0) + 1;
+      invitesData.weeklyCounts[inviterId] = (invitesData.weeklyCounts[inviterId] || 0) + 1;
       saveInvitesData(invitesData);
     }
   } catch (e) {
@@ -330,20 +375,31 @@ client.on("guildMemberRemove", (member) => {
 client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
+  maybeRollWeeklyData();
+
   for (const guild of client.guilds.cache.values()) {
     await cacheGuildInvites(guild);
   }
+
+  startWeeklyLeaderboardScheduler();
 });
 
 // ====== XP STORAGE ======
 function loadXpDataSafe() {
-  if (!fs.existsSync(XP_FILE)) return { users: {} };
+  if (!fs.existsSync(XP_FILE)) {
+    return { users: {}, weeklyXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
+  }
   try {
     const parsed = JSON.parse(fs.readFileSync(XP_FILE, "utf8"));
     if (!parsed.users) parsed.users = {};
+    if (!parsed.weeklyXp || typeof parsed.weeklyXp !== "object") parsed.weeklyXp = {};
+    if (!parsed.weeklyMeta || typeof parsed.weeklyMeta !== "object") {
+      parsed.weeklyMeta = { weekKey: getWeekKeyUTC() };
+    }
+    if (!parsed.weeklyMeta.weekKey) parsed.weeklyMeta.weekKey = getWeekKeyUTC();
     return parsed;
   } catch {
-    return { users: {} };
+    return { users: {}, weeklyXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
   }
 }
 
@@ -352,6 +408,147 @@ function saveXpData(obj) {
 }
 
 let xpData = loadXpDataSafe();
+
+function currentWeekKey() {
+  return getWeekKeyUTC();
+}
+
+function ensureWeeklyStores() {
+  if (!xpData.weeklyXp || typeof xpData.weeklyXp !== "object") xpData.weeklyXp = {};
+  if (!xpData.weeklyMeta || typeof xpData.weeklyMeta !== "object") {
+    xpData.weeklyMeta = { weekKey: currentWeekKey() };
+  }
+  if (!xpData.weeklyMeta.weekKey) xpData.weeklyMeta.weekKey = currentWeekKey();
+
+  if (!invitesData.weeklyCounts || typeof invitesData.weeklyCounts !== "object") {
+    invitesData.weeklyCounts = {};
+  }
+  if (!invitesData.weeklyMeta || typeof invitesData.weeklyMeta !== "object") {
+    invitesData.weeklyMeta = { weekKey: currentWeekKey() };
+  }
+  if (!invitesData.weeklyMeta.weekKey) invitesData.weeklyMeta.weekKey = currentWeekKey();
+}
+
+ensureWeeklyStores();
+
+function maybeRollWeeklyData() {
+  ensureWeeklyStores();
+
+  const nowWeek = currentWeekKey();
+  let changed = false;
+
+  if (xpData.weeklyMeta.weekKey !== nowWeek) {
+    xpData.weeklyMeta.weekKey = nowWeek;
+    xpData.weeklyXp = {};
+    changed = true;
+  }
+
+  if (invitesData.weeklyMeta.weekKey !== nowWeek) {
+    invitesData.weeklyMeta.weekKey = nowWeek;
+    invitesData.weeklyCounts = {};
+    changed = true;
+  }
+
+  if (changed) {
+    saveXpData(xpData);
+    saveInvitesData(invitesData);
+  }
+}
+
+async function postWeeklyLeaderboards(guild) {
+  maybeRollWeeklyData();
+
+  const target =
+    guild.channels.cache.get(WEEKLY_LEADERBOARD_CHANNEL_ID) ||
+    (await guild.channels.fetch(WEEKLY_LEADERBOARD_CHANNEL_ID).catch(() => null));
+
+  if (!target || !target.isTextBased()) return;
+
+  const xpEntries = Object.entries(xpData.weeklyXp || {})
+    .map(([uid, xp]) => ({ uid, xp: Number(xp) || 0 }))
+    .filter((x) => x.xp > 0)
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, 10);
+
+  const invEntries = Object.entries(invitesData.weeklyCounts || {})
+    .map(([uid, invites]) => ({ uid, invites: Number(invites) || 0 }))
+    .filter((x) => x.invites > 0)
+    .sort((a, b) => b.invites - a.invites)
+    .slice(0, 10);
+
+  const xpWinner = xpEntries[0] ? `<@${xpEntries[0].uid}>` : "No winner";
+  const invWinner = invEntries[0] ? `<@${invEntries[0].uid}>` : "No winner";
+
+  const xpLines = xpEntries.length
+    ? xpEntries.map((x, i) => `**${i + 1}.** <@${x.uid}> — **${x.xp} XP**`).join("\n")
+    : "No weekly XP yet.";
+
+  const invLines = invEntries.length
+    ? invEntries
+        .map((x, i) => `**${i + 1}.** <@${x.uid}> — **${x.invites} invites**`)
+        .join("\n")
+    : "No weekly invites yet.";
+
+  const embed = new EmbedBuilder()
+    .setTitle("🏆 Weekly Leaderboards")
+    .setColor(0xf1c40f)
+    .setDescription(
+      `Weekly wrap-up is here!\n` +
+        `⭐ **XP Winner:** ${xpWinner}\n` +
+        `🎟️ **Invite Winner:** ${invWinner}`
+    )
+    .addFields(
+      { name: "Top XP (This Week)", value: xpLines },
+      { name: "Top Invites (This Week)", value: invLines }
+    )
+    .setTimestamp();
+
+  const mentions = [xpEntries[0]?.uid, invEntries[0]?.uid].filter(Boolean);
+
+  await target
+    .send({
+      content: mentions.length ? mentions.map((id) => `<@${id}>`).join(" ") : "Weekly winners pending.",
+      embeds: [embed],
+      allowedMentions: { users: mentions },
+    })
+    .catch(() => {});
+}
+
+function startWeeklyLeaderboardScheduler() {
+  const checkAndRun = async () => {
+    const now = new Date();
+    const isSunday = now.getUTCDay() === 0;
+    const isMidnightHour = now.getUTCHours() === 0;
+    const inWindow = now.getUTCMinutes() < 15;
+
+    if (!isSunday || !isMidnightHour || !inWindow) {
+      maybeRollWeeklyData();
+      return;
+    }
+
+    const weekTag = `${currentWeekKey()}-posted`;
+    ensureWeeklyStores();
+
+    if (xpData.weeklyMeta.lastPostedWeekTag === weekTag) return;
+
+    for (const guild of client.guilds.cache.values()) {
+      await postWeeklyLeaderboards(guild).catch(() => {});
+    }
+
+    xpData.weeklyMeta.weekKey = currentWeekKey();
+    invitesData.weeklyMeta.weekKey = currentWeekKey();
+    xpData.weeklyXp = {};
+    invitesData.weeklyCounts = {};
+    xpData.weeklyMeta.lastPostedWeekTag = weekTag;
+    saveXpData(xpData);
+    saveInvitesData(invitesData);
+  };
+
+  checkAndRun().catch(() => {});
+  setInterval(() => {
+    checkAndRun().catch(() => {});
+  }, 5 * 60 * 1000);
+}
 
 function ensureXpUser(userId) {
   if (!xpData.users[userId]) {
@@ -677,9 +874,12 @@ client.on("messageCreate", async (message) => {
     if (now - last < cooldownMs) return;
 
     // Award XP
+    maybeRollWeeklyData();
+
     const gained = randInt(XP_MIN, XP_MAX);
     userObj.xp += gained;
     userObj.lastXpAt = now;
+    xpData.weeklyXp[userId] = (xpData.weeklyXp[userId] || 0) + gained;
 
     saveXpData(xpData);
 
@@ -960,6 +1160,8 @@ client.on("interactionCreate", async (interaction) => {
           interaction.guild.roles.cache.get(UNVERIFIED_ROLE_ID) ||
           interaction.guild.roles.cache.find((r) => r.name === OLD_ROLE_TO_REMOVE);
         if (oldRole) await member.roles.remove(oldRole).catch(() => {});
+
+        await assignPostVerifyRoles(member).catch(() => {});
 
         if (member.manageable) {
           await member.setNickname(name.slice(0, 32)).catch(() => {});
