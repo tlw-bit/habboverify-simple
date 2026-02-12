@@ -44,6 +44,7 @@ const XP_COOLDOWN_SECONDS = 30;
 const REACTION_XP_MIN = 8;
 const REACTION_XP_MAX = 15;
 const REACTION_XP_COOLDOWN_SECONDS = 45;
+const LEVEL_ANNOUNCE_DEDUPE_SECONDS = 60 * 60 * 6;
 
 const PRESTIGE_AT_LEVEL = 50; // prestige when reaching this level
 const PRESTIGE_RESET_LEVEL = 1; // new level after prestige
@@ -561,14 +562,36 @@ function ensureXpUser(userId) {
       prestige: 0,
       lastXpAt: 0,
       lastReactionXpAt: 0,
+      lastAnnouncedLevel: 0,
+      lastAnnouncedLevelAt: 0,
     };
   } else {
     if (typeof xpData.users[userId].prestige !== "number") xpData.users[userId].prestige = 0;
     if (typeof xpData.users[userId].lastReactionXpAt !== "number") {
       xpData.users[userId].lastReactionXpAt = 0;
     }
+    if (typeof xpData.users[userId].lastAnnouncedLevel !== "number") {
+      xpData.users[userId].lastAnnouncedLevel = 0;
+    }
+    if (typeof xpData.users[userId].lastAnnouncedLevelAt !== "number") {
+      xpData.users[userId].lastAnnouncedLevelAt = 0;
+    }
   }
   return xpData.users[userId];
+}
+
+function shouldAnnounceLevel(userObj, level) {
+  const now = Date.now();
+  const lastLevel = Number(userObj.lastAnnouncedLevel || 0);
+  const lastAt = Number(userObj.lastAnnouncedLevelAt || 0);
+
+  if (lastLevel === level && now - lastAt < LEVEL_ANNOUNCE_DEDUPE_SECONDS * 1000) {
+    return false;
+  }
+
+  userObj.lastAnnouncedLevel = level;
+  userObj.lastAnnouncedLevelAt = now;
+  return true;
 }
 
 // XP curve
@@ -831,7 +854,9 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
       userObj.xp = PRESTIGE_RESET_XP;
 
       // announce the level 50 line
-      await announceLevelUp(guild, channel, userDiscord, PRESTIGE_AT_LEVEL).catch(() => {});
+      if (shouldAnnounceLevel(userObj, PRESTIGE_AT_LEVEL)) {
+        await announceLevelUp(guild, channel, userDiscord, PRESTIGE_AT_LEVEL).catch(() => {});
+      }
 
       // prestige message
       const userMention = `<@${userDiscord.id}>`;
@@ -858,7 +883,9 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
       break;
     }
 
-    await announceLevelUp(guild, channel, userDiscord, userObj.level).catch(() => {});
+    if (shouldAnnounceLevel(userObj, userObj.level)) {
+      await announceLevelUp(guild, channel, userDiscord, userObj.level).catch(() => {});
+    }
     if (member) await applyLevelRoles(member, userObj.level).catch(() => {});
   }
 }
@@ -1043,6 +1070,9 @@ client.on("interactionCreate", async (interaction) => {
         targetObj.level = 1;
         targetObj.prestige = 0;
         targetObj.lastXpAt = 0;
+        targetObj.lastReactionXpAt = 0;
+        targetObj.lastAnnouncedLevel = 0;
+        targetObj.lastAnnouncedLevelAt = 0;
       }
 
       saveXpData(xpData);
