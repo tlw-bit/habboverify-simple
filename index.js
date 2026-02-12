@@ -40,7 +40,10 @@ const XP_BLOCKED_CHANNEL_IDS = ["1462386529765691473"]; // e.g. ["999"]
 
 const XP_MIN = 10;
 const XP_MAX = 20;
-const XP_COOLDOWN_SECONDS = 60;
+const XP_COOLDOWN_SECONDS = 30;
+const REACTION_XP_MIN = 8;
+const REACTION_XP_MAX = 15;
+const REACTION_XP_COOLDOWN_SECONDS = 45;
 
 const PRESTIGE_AT_LEVEL = 50; // prestige when reaching this level
 const PRESTIGE_RESET_LEVEL = 1; // new level after prestige
@@ -552,16 +555,25 @@ function startWeeklyLeaderboardScheduler() {
 
 function ensureXpUser(userId) {
   if (!xpData.users[userId]) {
-    xpData.users[userId] = { xp: 0, level: 1, prestige: 0, lastXpAt: 0 };
+    xpData.users[userId] = {
+      xp: 0,
+      level: 1,
+      prestige: 0,
+      lastXpAt: 0,
+      lastReactionXpAt: 0,
+    };
   } else {
     if (typeof xpData.users[userId].prestige !== "number") xpData.users[userId].prestige = 0;
+    if (typeof xpData.users[userId].lastReactionXpAt !== "number") {
+      xpData.users[userId].lastReactionXpAt = 0;
+    }
   }
   return xpData.users[userId];
 }
 
 // XP curve
 function xpNeeded(level) {
-  return 100 + (level - 1) * 50;
+  return 70 + (level - 1) * 35;
 }
 
 function shouldAwardXp(channelId) {
@@ -851,6 +863,28 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
   }
 }
 
+async function awardXpAndProcess({ guild, channel, userId, userDiscord, amount }) {
+  maybeRollWeeklyData();
+
+  const userObj = ensureXpUser(userId);
+  userObj.xp += amount;
+  xpData.weeklyXp[userId] = (xpData.weeklyXp[userId] || 0) + amount;
+
+  saveXpData(xpData);
+
+  const member = await guild.members.fetch(userId).catch(() => null);
+
+  await processLevelUps({
+    guild,
+    channel,
+    userObj,
+    userDiscord,
+    member,
+  }).catch(() => {});
+
+  saveXpData(xpData);
+}
+
 // ====== MESSAGE CREATE (XP AWARDING) ======
 client.on("messageCreate", async (message) => {
   try {
@@ -874,29 +908,53 @@ client.on("messageCreate", async (message) => {
     if (now - last < cooldownMs) return;
 
     // Award XP
-    maybeRollWeeklyData();
-
     const gained = randInt(XP_MIN, XP_MAX);
-    userObj.xp += gained;
     userObj.lastXpAt = now;
-    xpData.weeklyXp[userId] = (xpData.weeklyXp[userId] || 0) + gained;
-
-    saveXpData(xpData);
-
-    // Level-ups + roles
-    const member = await message.guild.members.fetch(userId).catch(() => null);
-
-    await processLevelUps({
+    await awardXpAndProcess({
       guild: message.guild,
       channel: message.channel,
-      userObj,
+      userId,
       userDiscord: message.author,
-      member,
+      amount: gained,
     }).catch(() => {});
-
-    saveXpData(xpData);
   } catch (err) {
     console.error("messageCreate XP error:", err?.message || err);
+  }
+});
+
+client.on("messageReactionAdd", async (reaction, user) => {
+  try {
+    if (user.bot) return;
+
+    if (reaction.partial) await reaction.fetch().catch(() => null);
+    if (!reaction.message?.guild) return;
+
+    const guild = reaction.message.guild;
+    const channel = reaction.message.channel;
+    if (!channel?.isTextBased()) return;
+    if (!shouldAwardXp(channel.id)) return;
+
+    const messageAuthorId = reaction.message.author?.id;
+    if (messageAuthorId && messageAuthorId === user.id) return;
+
+    const userObj = ensureXpUser(user.id);
+    const now = Date.now();
+    const last = Number(userObj.lastReactionXpAt || 0);
+    const cooldownMs = REACTION_XP_COOLDOWN_SECONDS * 1000;
+    if (now - last < cooldownMs) return;
+
+    const gained = randInt(REACTION_XP_MIN, REACTION_XP_MAX);
+    userObj.lastReactionXpAt = now;
+
+    await awardXpAndProcess({
+      guild,
+      channel,
+      userId: user.id,
+      userDiscord: user,
+      amount: gained,
+    }).catch(() => {});
+  } catch (err) {
+    console.error("messageReactionAdd XP error:", err?.message || err);
   }
 });
 
@@ -930,10 +988,11 @@ client.on("interactionCreate", async (interaction) => {
         .setDescription(
           `⏱️ **Cooldown:** 1 award every **${XP_COOLDOWN_SECONDS}s** per user\n` +
             `🎲 **XP per award:** **${XP_MIN}–${XP_MAX}** (avg ~${avg})\n` +
+            `😀 **Reaction XP:** **${REACTION_XP_MIN}–${REACTION_XP_MAX}** every **${REACTION_XP_COOLDOWN_SECONDS}s**\n` +
             `🗣️ **Minimum message:** **5+ words**\n` +
             `✅ **XP allowed in:** ${allowed}\n` +
             `🚫 **XP blocked in:** ${blocked}\n\n` +
-            `📊 **XP needed per level:** \`100 + (level - 1) * 50\`\n` +
+            `📊 **XP needed per level:** \`70 + (level - 1) * 35\`\n` +
             `⭐ **Prestige:** at **Level ${PRESTIGE_AT_LEVEL}** (resets to Level ${PRESTIGE_RESET_LEVEL})`
         )
         .setTimestamp();
