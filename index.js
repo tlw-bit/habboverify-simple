@@ -93,6 +93,7 @@ const DEFAULT_ACCENT = "#5865f2";
 
 // ====== INVITE TRACKING STORAGE ======
 const INVITES_FILE = path.join(__dirname, "invites.json");
+const PENDING_CODES_FILE = process.env.PENDING_CODES_FILE || path.join(__dirname, "pending-codes.json");
 
 function getWeekKeyUTC(date = new Date()) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -127,7 +128,22 @@ function saveInvitesData(obj) {
 let invitesData = loadInvitesDataSafe();
 
 // ====== VERIFICATION PENDING CODES (GLOBAL) ======
-const pending = new Map();
+function loadPendingCodesSafe() {
+  if (!fs.existsSync(PENDING_CODES_FILE)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(PENDING_CODES_FILE, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePendingCodes() {
+  const asObj = Object.fromEntries(pending.entries());
+  fs.writeFileSync(PENDING_CODES_FILE, JSON.stringify(asObj, null, 2), "utf8");
+}
+
+const pending = new Map(Object.entries(loadPendingCodesSafe()));
 
 function makeCode() {
   return "verify-" + Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -1199,6 +1215,7 @@ client.on("interactionCreate", async (interaction) => {
     if (cmd === "getcode") {
       const code = makeCode();
       pending.set(interaction.user.id, code);
+      savePendingCodes();
 
       try {
         await interaction.user.send(
@@ -1228,7 +1245,7 @@ client.on("interactionCreate", async (interaction) => {
       try {
         const motto = await fetchHabboMotto(name);
 
-        const norm = (s) => (s || "").trim().replace(/\s+/g, " ");
+        const norm = (s) => (s || "").trim().replace(/\s+/g, " ").toLowerCase();
         if (!norm(motto).includes(norm(code))) {
           return interaction.editReply(
             `Motto doesn't match yet.\n` +
@@ -1257,6 +1274,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         pending.delete(interaction.user.id);
+        savePendingCodes();
 
         sendLogEmbed(interaction.guild, verifiedEmbed(interaction.user.id, name));
         return interaction.editReply("✅ Check-in complete. You’re verified!");
