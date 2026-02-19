@@ -1273,9 +1273,9 @@ client.on("messageCreate", async (message) => {
     // Channel eligibility
     if (!shouldAwardXp(message.channelId)) return;
 
-    // 5+ word requirement
+    // 2+ word requirement
     const words = message.content.trim().split(/\s+/).filter(Boolean);
-    if (words.length < 5) return;
+    if (words.length < 2) return;
 
     const userId = message.author.id;
     const userObj = ensureXpUser(userId);
@@ -1368,7 +1368,7 @@ client.on("interactionCreate", async (interaction) => {
           `⏱️ **Cooldown:** 1 award every **${XP_COOLDOWN_SECONDS}s** per user\n` +
             `🎲 **XP per award:** **${XP_MIN}–${XP_MAX}** (avg ~${avg})\n` +
             `😀 **Reaction XP:** **${REACTION_XP_MIN}–${REACTION_XP_MAX}** every **${REACTION_XP_COOLDOWN_SECONDS}s**\n` +
-            `🗣️ **Minimum message:** **5+ words**\n` +
+            `🗣️ **Minimum message:** **2+ words**\n` +
             `✅ **XP allowed in:** ${allowed}\n` +
             `🚫 **XP blocked in:** ${blocked}\n\n` +
             `📊 **XP needed per level:** \`70 + (level - 1) * 35\`\n` +
