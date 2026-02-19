@@ -62,6 +62,100 @@ const WEEKLY_LEADERBOARD_CHANNEL_ID =
 const GIVEAWAY_ROLE_ID = process.env.GIVEAWAY_ROLE_ID || "";
 const HABBO_GAMES_ROLE_ID = process.env.HABBO_GAMES_ROLE_ID || "";
 
+const AUTO_REGISTER_SLASH_COMMANDS =
+  String(process.env.AUTO_REGISTER_SLASH_COMMANDS || "true").toLowerCase() !== "false";
+const COMMANDS_GUILD_ID = String(process.env.COMMANDS_GUILD_ID || "").trim();
+
+const SLASH_COMMANDS = [
+  { name: "ping", description: "Health check" },
+  { name: "xpinfo", description: "Show XP system info" },
+  {
+    name: "xpadmin",
+    description: "Admin XP controls",
+    options: [
+      {
+        type: 3,
+        name: "action",
+        description: "give / take / set / reset",
+        required: true,
+        choices: [
+          { name: "give", value: "give" },
+          { name: "take", value: "take" },
+          { name: "set", value: "set" },
+          { name: "reset", value: "reset" },
+        ],
+      },
+      { type: 6, name: "user", description: "Target user", required: true },
+      { type: 4, name: "amount", description: "Amount (not needed for reset)", required: false },
+    ],
+  },
+  {
+    name: "level",
+    description: "Show level and XP",
+    options: [{ type: 6, name: "user", description: "User", required: false }],
+  },
+  {
+    name: "twlpoints",
+    description: "Show TWL points",
+    options: [{ type: 6, name: "user", description: "User", required: false }],
+  },
+  {
+    name: "twlleaderboard",
+    description: "Show TWL leaderboard",
+    options: [
+      {
+        type: 3,
+        name: "mode",
+        description: "weekly or all",
+        required: false,
+        choices: [
+          { name: "weekly", value: "weekly" },
+          { name: "all", value: "all" },
+        ],
+      },
+    ],
+  },
+  {
+    name: "twladmin",
+    description: "Admin TWL points controls",
+    options: [
+      {
+        type: 3,
+        name: "action",
+        description: "add / take / set / resetweekly",
+        required: true,
+        choices: [
+          { name: "add", value: "add" },
+          { name: "take", value: "take" },
+          { name: "set", value: "set" },
+          { name: "resetweekly", value: "resetweekly" },
+        ],
+      },
+      { type: 6, name: "user", description: "Target user", required: false },
+      { type: 4, name: "amount", description: "Amount", required: false },
+    ],
+  },
+  {
+    name: "invites",
+    description: "Show invites/referrals",
+    options: [{ type: 6, name: "user", description: "User", required: false }],
+  },
+  { name: "invleaderboard", description: "Show invite leaderboard" },
+  { name: "xpleaderboard", description: "Show XP leaderboard" },
+  {
+    name: "rank",
+    description: "Generate rank card",
+    options: [{ type: 6, name: "user", description: "User", required: false }],
+  },
+  { name: "getcode", description: "Get verification code in DMs" },
+  {
+    name: "verify",
+    description: "Verify your Habbo account",
+    options: [{ type: 3, name: "habbo", description: "Your Habbo username", required: true }],
+  },
+  { name: "verifymsg", description: "Post and pin verification instructions" },
+];
+
 // Optional level roles: level -> roleId
 const LEVEL_ROLES = {
   2: "1462479094859038773", // Pool’s Closed
@@ -448,9 +542,48 @@ client.on("guildMemberRemove", (member) => {
   sendLogEmbed(member.guild, leaveEmbed(member));
 });
 
+async function registerSlashCommands() {
+  if (!AUTO_REGISTER_SLASH_COMMANDS) {
+    console.log("ℹ️ AUTO_REGISTER_SLASH_COMMANDS=false, skipping slash command registration.");
+    return;
+  }
+  if (!client.application) return;
+
+  try {
+    if (COMMANDS_GUILD_ID) {
+      const guild = client.guilds.cache.get(COMMANDS_GUILD_ID) ||
+        (await client.guilds.fetch(COMMANDS_GUILD_ID).catch(() => null));
+      if (!guild) throw new Error(`Guild not found for COMMANDS_GUILD_ID=${COMMANDS_GUILD_ID}`);
+      await guild.commands.set(SLASH_COMMANDS);
+      console.log(`✅ Registered ${SLASH_COMMANDS.length} guild slash commands in ${guild.name}.`);
+    } else {
+      await client.application.commands.set(SLASH_COMMANDS);
+      console.log(`✅ Registered ${SLASH_COMMANDS.length} global slash commands.`);
+    }
+  } catch (err) {
+    console.error("❌ Failed to register slash commands:", err?.message || err);
+  }
+}
+
+async function safeDeferReply(interaction, opts = {}) {
+  try {
+    await interaction.deferReply(opts);
+    return true;
+  } catch (err) {
+    const code = Number(err?.code || err?.rawError?.code || 0);
+    if (code === 10062 || code === 40060) {
+      console.warn("⚠️ deferReply skipped:", err?.message || err);
+      return false;
+    }
+    throw err;
+  }
+}
+
 // ====== READY ======
 client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+
+  await registerSlashCommands();
 
   maybeRollWeeklyData();
 
@@ -1478,7 +1611,7 @@ client.on("interactionCreate", async (interaction) => {
 
     // /rank (this can take time, so defer)
     if (cmd === "rank") {
-      await interaction.deferReply();
+      if (!(await safeDeferReply(interaction))) return;
 
       const u = interaction.options.getUser("user") || interaction.user;
       const member = await interaction.guild.members.fetch(u.id).catch(() => null);
@@ -1521,7 +1654,7 @@ client.on("interactionCreate", async (interaction) => {
 
     // /verify
     if (cmd === "verify") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (!(await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral }))) return;
 
       const name = interaction.options.getString("habbo", true).trim();
       const code = pending.get(interaction.user.id);
@@ -1622,12 +1755,35 @@ client.on("interactionCreate", async (interaction) => {
     });
   } catch (err) {
     console.error("interactionCreate error:", err);
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction
-        .reply({ content: "Something went wrong 😬", flags: MessageFlags.Ephemeral })
-        .catch(() => {});
+
+    if (!interaction.isRepliable()) return;
+
+    const payload = { content: "Something went wrong 😬", flags: MessageFlags.Ephemeral };
+    const code = Number(err?.code || err?.rawError?.code || 0);
+
+    if (code === 10062) return;
+
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp(payload);
+      } else {
+        await interaction.reply(payload);
+      }
+    } catch (replyErr) {
+      const replyCode = Number(replyErr?.code || replyErr?.rawError?.code || 0);
+      if (replyCode !== 10062 && replyCode !== 40060) {
+        console.error("interaction error response failed:", replyErr?.message || replyErr);
+      }
     }
   }
+});
+
+client.on("error", (err) => {
+  console.error("discord client error:", err?.message || err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandledRejection:", reason);
 });
 
 // ====== LOGIN (exactly once) ======
