@@ -31,6 +31,7 @@ const WELCOME_CHANNEL_ID = "1456962809425559613";
 
 // ====== XP / LEVELING CONFIG ======
 const XP_FILE = process.env.XP_FILE || path.join(__dirname, "xp.json");
+const XP_FILE_BAK = `${XP_FILE}.bak`;
 
 // If you want XP only in specific channels, put IDs here. Leave [] to allow everywhere.
 const XP_ALLOWED_CHANNEL_IDS = []; // e.g. ["123", "456"]
@@ -406,25 +407,54 @@ client.once("ready", async () => {
 
 // ====== XP STORAGE ======
 function loadXpDataSafe() {
-  if (!fs.existsSync(XP_FILE)) {
-    return { users: {}, weeklyXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
-  }
-  try {
-    const parsed = JSON.parse(fs.readFileSync(XP_FILE, "utf8"));
-    if (!parsed.users) parsed.users = {};
+  const base = { users: {}, weeklyXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
+
+  const normalize = (parsed) => {
+    if (!parsed || typeof parsed !== "object") return { ...base };
+    if (!parsed.users || typeof parsed.users !== "object") parsed.users = {};
     if (!parsed.weeklyXp || typeof parsed.weeklyXp !== "object") parsed.weeklyXp = {};
     if (!parsed.weeklyMeta || typeof parsed.weeklyMeta !== "object") {
       parsed.weeklyMeta = { weekKey: getWeekKeyUTC() };
     }
     if (!parsed.weeklyMeta.weekKey) parsed.weeklyMeta.weekKey = getWeekKeyUTC();
     return parsed;
-  } catch {
-    return { users: {}, weeklyXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
+  };
+
+  const loadFile = (filePath) => {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, "utf8");
+    return normalize(JSON.parse(raw));
+  };
+
+  try {
+    const primary = loadFile(XP_FILE);
+    if (primary) return primary;
+  } catch (err) {
+    console.error(`[XP] Failed to read ${XP_FILE}:`, err?.message || err);
   }
+
+  try {
+    const backup = loadFile(XP_FILE_BAK);
+    if (backup) {
+      console.warn(`[XP] Recovered XP data from backup: ${XP_FILE_BAK}`);
+      return backup;
+    }
+  } catch (err) {
+    console.error(`[XP] Failed to read ${XP_FILE_BAK}:`, err?.message || err);
+  }
+
+  return base;
 }
 
 function saveXpData(obj) {
-  fs.writeFileSync(XP_FILE, JSON.stringify(obj, null, 2), "utf8");
+  const json = JSON.stringify(obj, null, 2);
+  const dir = path.dirname(XP_FILE);
+  const base = path.basename(XP_FILE);
+  const tmp = path.join(dir, `${base}.tmp`);
+
+  fs.writeFileSync(tmp, json, "utf8");
+  fs.renameSync(tmp, XP_FILE);
+  fs.writeFileSync(XP_FILE_BAK, json, "utf8");
 }
 
 let xpData = loadXpDataSafe();
