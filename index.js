@@ -31,6 +31,7 @@ const WELCOME_CHANNEL_ID = "1456962809425559613";
 
 // ====== XP / LEVELING CONFIG ======
 const XP_FILE = process.env.XP_FILE || path.join(__dirname, "xp.json");
+const XP_FILE_BAK = `${XP_FILE}.bak`;
 
 // If you want XP only in specific channels, put IDs here. Leave [] to allow everywhere.
 const XP_ALLOWED_CHANNEL_IDS = []; // e.g. ["123", "456"]
@@ -93,6 +94,7 @@ const DEFAULT_ACCENT = "#5865f2";
 
 // ====== INVITE TRACKING STORAGE ======
 const INVITES_FILE = path.join(__dirname, "invites.json");
+const TWL_POINTS_FILE = process.env.TWL_POINTS_FILE || path.join(__dirname, "twl-points.json");
 const PENDING_CODES_FILE = process.env.PENDING_CODES_FILE || path.join(__dirname, "pending-codes.json");
 
 function getWeekKeyUTC(date = new Date()) {
@@ -126,6 +128,61 @@ function saveInvitesData(obj) {
 }
 
 let invitesData = loadInvitesDataSafe();
+
+// ====== TWL POINTS STORAGE ======
+function loadTwlPointsSafe() {
+  if (!fs.existsSync(TWL_POINTS_FILE)) {
+    return { totals: {}, weeklyCounts: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(TWL_POINTS_FILE, "utf8"));
+    if (!parsed.totals || typeof parsed.totals !== "object") parsed.totals = {};
+    if (!parsed.weeklyCounts || typeof parsed.weeklyCounts !== "object") parsed.weeklyCounts = {};
+    if (!parsed.weeklyMeta || typeof parsed.weeklyMeta !== "object") {
+      parsed.weeklyMeta = { weekKey: getWeekKeyUTC() };
+    }
+    if (!parsed.weeklyMeta.weekKey) parsed.weeklyMeta.weekKey = getWeekKeyUTC();
+    return parsed;
+  } catch {
+    return { totals: {}, weeklyCounts: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
+  }
+}
+
+function saveTwlPointsData(obj) {
+  fs.writeFileSync(TWL_POINTS_FILE, JSON.stringify(obj, null, 2), "utf8");
+}
+
+let twlPointsData = loadTwlPointsSafe();
+
+function getTopTwlWeekly(limit = 3) {
+  return Object.entries(twlPointsData.weeklyCounts || {})
+    .map(([uid, count]) => ({ uid, count: Number(count) || 0 }))
+    .filter((x) => x.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+}
+
+function getTopTwlAllTime(limit = 10) {
+  return Object.entries(twlPointsData.totals || {})
+    .map(([uid, count]) => ({ uid, count: Number(count) || 0 }))
+    .filter((x) => x.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+}
+
+function addTwlPoints(userId, amount) {
+  maybeRollWeeklyData();
+  const n = Number(amount) || 0;
+  if (n === 0) return;
+
+  twlPointsData.totals[userId] = Math.max(0, (Number(twlPointsData.totals[userId]) || 0) + n);
+  twlPointsData.weeklyCounts[userId] = Math.max(0, (Number(twlPointsData.weeklyCounts[userId]) || 0) + n);
+
+  if (twlPointsData.totals[userId] === 0) delete twlPointsData.totals[userId];
+  if (twlPointsData.weeklyCounts[userId] === 0) delete twlPointsData.weeklyCounts[userId];
+
+  saveTwlPointsData(twlPointsData);
+}
 
 // ====== VERIFICATION PENDING CODES (GLOBAL) ======
 function loadPendingCodesSafe() {
@@ -406,25 +463,54 @@ client.once("ready", async () => {
 
 // ====== XP STORAGE ======
 function loadXpDataSafe() {
-  if (!fs.existsSync(XP_FILE)) {
-    return { users: {}, weeklyXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
-  }
-  try {
-    const parsed = JSON.parse(fs.readFileSync(XP_FILE, "utf8"));
-    if (!parsed.users) parsed.users = {};
+  const base = { users: {}, weeklyXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
+
+  const normalize = (parsed) => {
+    if (!parsed || typeof parsed !== "object") return { ...base };
+    if (!parsed.users || typeof parsed.users !== "object") parsed.users = {};
     if (!parsed.weeklyXp || typeof parsed.weeklyXp !== "object") parsed.weeklyXp = {};
     if (!parsed.weeklyMeta || typeof parsed.weeklyMeta !== "object") {
       parsed.weeklyMeta = { weekKey: getWeekKeyUTC() };
     }
     if (!parsed.weeklyMeta.weekKey) parsed.weeklyMeta.weekKey = getWeekKeyUTC();
     return parsed;
-  } catch {
-    return { users: {}, weeklyXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
+  };
+
+  const loadFile = (filePath) => {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, "utf8");
+    return normalize(JSON.parse(raw));
+  };
+
+  try {
+    const primary = loadFile(XP_FILE);
+    if (primary) return primary;
+  } catch (err) {
+    console.error(`[XP] Failed to read ${XP_FILE}:`, err?.message || err);
   }
+
+  try {
+    const backup = loadFile(XP_FILE_BAK);
+    if (backup) {
+      console.warn(`[XP] Recovered XP data from backup: ${XP_FILE_BAK}`);
+      return backup;
+    }
+  } catch (err) {
+    console.error(`[XP] Failed to read ${XP_FILE_BAK}:`, err?.message || err);
+  }
+
+  return base;
 }
 
 function saveXpData(obj) {
-  fs.writeFileSync(XP_FILE, JSON.stringify(obj, null, 2), "utf8");
+  const json = JSON.stringify(obj, null, 2);
+  const dir = path.dirname(XP_FILE);
+  const base = path.basename(XP_FILE);
+  const tmp = path.join(dir, `${base}.tmp`);
+
+  fs.writeFileSync(tmp, json, "utf8");
+  fs.renameSync(tmp, XP_FILE);
+  fs.writeFileSync(XP_FILE_BAK, json, "utf8");
 }
 
 let xpData = loadXpDataSafe();
@@ -447,6 +533,14 @@ function ensureWeeklyStores() {
     invitesData.weeklyMeta = { weekKey: currentWeekKey() };
   }
   if (!invitesData.weeklyMeta.weekKey) invitesData.weeklyMeta.weekKey = currentWeekKey();
+
+  if (!twlPointsData.weeklyCounts || typeof twlPointsData.weeklyCounts !== "object") {
+    twlPointsData.weeklyCounts = {};
+  }
+  if (!twlPointsData.weeklyMeta || typeof twlPointsData.weeklyMeta !== "object") {
+    twlPointsData.weeklyMeta = { weekKey: currentWeekKey() };
+  }
+  if (!twlPointsData.weeklyMeta.weekKey) twlPointsData.weeklyMeta.weekKey = currentWeekKey();
 }
 
 ensureWeeklyStores();
@@ -469,9 +563,16 @@ function maybeRollWeeklyData() {
     changed = true;
   }
 
+  if (twlPointsData.weeklyMeta.weekKey !== nowWeek) {
+    twlPointsData.weeklyMeta.weekKey = nowWeek;
+    twlPointsData.weeklyCounts = {};
+    changed = true;
+  }
+
   if (changed) {
     saveXpData(xpData);
     saveInvitesData(invitesData);
+    saveTwlPointsData(twlPointsData);
   }
 }
 
@@ -509,6 +610,13 @@ async function postWeeklyLeaderboards(guild) {
         .join("\n")
     : "No weekly invites yet.";
 
+  const twlEntries = getTopTwlWeekly(3);
+  const twlLines = twlEntries.length
+    ? twlEntries
+        .map((x, i) => `**${i + 1}.** <@${x.uid}> — **${x.count}** TWL point${x.count === 1 ? "" : "s"}`)
+        .join("\n")
+    : "No weekly TWL points yet.";
+
   const embed = new EmbedBuilder()
     .setTitle("🏆 Weekly Leaderboards")
     .setColor(0xf1c40f)
@@ -519,11 +627,12 @@ async function postWeeklyLeaderboards(guild) {
     )
     .addFields(
       { name: "Top XP (This Week)", value: xpLines },
-      { name: "Top Invites (This Week)", value: invLines }
+      { name: "Top Invites (This Week)", value: invLines },
+      { name: "Top TWL Winners (This Week)", value: twlLines }
     )
     .setTimestamp();
 
-  const mentions = [xpEntries[0]?.uid, invEntries[0]?.uid].filter(Boolean);
+  const mentions = [xpEntries[0]?.uid, invEntries[0]?.uid, ...twlEntries.map((x) => x.uid)].filter(Boolean);
 
   await target
     .send({
@@ -557,11 +666,14 @@ function startWeeklyLeaderboardScheduler() {
 
     xpData.weeklyMeta.weekKey = currentWeekKey();
     invitesData.weeklyMeta.weekKey = currentWeekKey();
+    twlPointsData.weeklyMeta.weekKey = currentWeekKey();
     xpData.weeklyXp = {};
     invitesData.weeklyCounts = {};
+    twlPointsData.weeklyCounts = {};
     xpData.weeklyMeta.lastPostedWeekTag = weekTag;
     saveXpData(xpData);
     saveInvitesData(invitesData);
+    saveTwlPointsData(twlPointsData);
   };
 
   checkAndRun().catch(() => {});
@@ -934,6 +1046,97 @@ client.on("messageCreate", async (message) => {
     if (!message.guild) return; // no XP in DMs
     if (message.author.bot) return; // no XP for bots
 
+    if (message.content.startsWith(`${PREFIX}twl`)) {
+      const parts = message.content.trim().split(/\s+/);
+      const sub = (parts[1] || "").toLowerCase();
+      const target = message.mentions.users.first();
+      const amountRaw = Number(parts.find((x, i) => i >= 2 && /^-?\d+$/.test(x)));
+      const amount = Number.isFinite(amountRaw) ? amountRaw : 1;
+
+      const isAdmin =
+        message.memberPermissions?.has(PermissionsBitField.Flags.Administrator) ||
+        message.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild);
+
+      if (!sub || sub === "help") {
+        await message.channel
+          .send(
+            "🧮 **TWL points**\n" +
+              "`!twl points [@user]` - show points\n" +
+              "`!twl top [weekly|all]` - leaderboard\n" +
+              "`!twl add @user [amount]` - admin add points\n" +
+              "`!twl take @user [amount]` - admin remove points\n" +
+              "`!twl set @user <amount>` - admin set total points\n" +
+              "`!twl resetweekly` - admin reset weekly points"
+          )
+          .catch(() => {});
+        return;
+      }
+
+      if (sub === "points") {
+        maybeRollWeeklyData();
+        const u = target || message.author;
+        const total = Number(twlPointsData.totals[u.id]) || 0;
+        const weekly = Number(twlPointsData.weeklyCounts[u.id]) || 0;
+        await message.channel
+          .send(`🏅 <@${u.id}> — **${total}** total TWL points (**${weekly}** this week).`)
+          .catch(() => {});
+        return;
+      }
+
+      if (sub === "top") {
+        maybeRollWeeklyData();
+        const mode = (parts[2] || "weekly").toLowerCase();
+        const entries = mode === "all" ? getTopTwlAllTime(10) : getTopTwlWeekly(10);
+        if (!entries.length) {
+          await message.channel.send("No TWL points tracked yet.").catch(() => {});
+          return;
+        }
+        const lines = entries.map((x, i) => `**${i + 1}.** <@${x.uid}> — **${x.count}**`);
+        await message.channel
+          .send(`🏆 **TWL ${mode === "all" ? "All-Time" : "Weekly"} Leaderboard**\n${lines.join("\n")}`)
+          .catch(() => {});
+        return;
+      }
+
+      if (!isAdmin) {
+        await message.channel.send("❌ You don’t have permission to use TWL admin actions.").catch(() => {});
+        return;
+      }
+
+      if (sub === "resetweekly") {
+        twlPointsData.weeklyCounts = {};
+        twlPointsData.weeklyMeta.weekKey = currentWeekKey();
+        saveTwlPointsData(twlPointsData);
+        await message.channel.send("✅ Reset TWL weekly points.").catch(() => {});
+        return;
+      }
+
+      if (!target) {
+        await message.channel.send("Mention a user, e.g. `!twl add @user 1`").catch(() => {});
+        return;
+      }
+
+      if (sub === "add") {
+        addTwlPoints(target.id, Math.max(1, amount));
+      } else if (sub === "take") {
+        addTwlPoints(target.id, -Math.max(1, amount));
+      } else if (sub === "set") {
+        const desired = Math.max(0, Number.isFinite(amountRaw) ? amountRaw : 0);
+        const curr = Number(twlPointsData.totals[target.id]) || 0;
+        addTwlPoints(target.id, desired - curr);
+      } else {
+        await message.channel.send("Unknown subcommand. Try `!twl help`.").catch(() => {});
+        return;
+      }
+
+      const total = Number(twlPointsData.totals[target.id]) || 0;
+      const weekly = Number(twlPointsData.weeklyCounts[target.id]) || 0;
+      await message.channel
+        .send(`✅ Updated <@${target.id}> — **${total}** total, **${weekly}** this week.`)
+        .catch(() => {});
+      return;
+    }
+
     // Channel eligibility
     if (!shouldAwardXp(message.channelId)) return;
 
@@ -1134,6 +1337,88 @@ client.on("interactionCreate", async (interaction) => {
           (userObj.prestige ? ` (⭐ Prestige **${userObj.prestige}**)` : "") +
           `\nReputation: **${userObj.xp}/${needed}**`
       );
+    }
+
+    // /twlpoints
+    if (cmd === "twlpoints") {
+      maybeRollWeeklyData();
+      const u = interaction.options.getUser("user") || interaction.user;
+      const total = Number(twlPointsData.totals[u.id]) || 0;
+      const weekly = Number(twlPointsData.weeklyCounts[u.id]) || 0;
+      return interaction.reply(`🏅 <@${u.id}> has **${total}** total TWL points (**${weekly}** this week).`);
+    }
+
+    // /twlleaderboard
+    if (cmd === "twlleaderboard") {
+      maybeRollWeeklyData();
+      const mode = (interaction.options.getString("mode") || "weekly").toLowerCase();
+      const entries = mode === "all" ? getTopTwlAllTime(15) : getTopTwlWeekly(15);
+      if (!entries.length) return interaction.reply("No TWL points tracked yet.");
+
+      const lines = entries.map(
+        (x, i) => `**${i + 1}.** <@${x.uid}> — **${x.count}** TWL point${x.count === 1 ? "" : "s"}`
+      );
+
+      const embed = new EmbedBuilder()
+        .setTitle(`🏆 TWL ${mode === "all" ? "All-Time" : "Weekly"} Leaderboard`)
+        .setDescription(lines.join("\n"))
+        .setColor(0xf1c40f)
+        .setTimestamp();
+
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    // /twladmin
+    if (cmd === "twladmin") {
+      const perms = interaction.memberPermissions;
+      const isAllowed =
+        perms?.has(PermissionsBitField.Flags.Administrator) ||
+        perms?.has(PermissionsBitField.Flags.ManageGuild);
+
+      if (!isAllowed) {
+        return interaction.reply({
+          content: "❌ You don’t have permission to use this.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const action = (interaction.options.getString("action", true) || "").toLowerCase();
+      const targetUser = interaction.options.getUser("user");
+      const amount = interaction.options.getInteger("amount") ?? 1;
+
+      if (action === "resetweekly") {
+        twlPointsData.weeklyCounts = {};
+        twlPointsData.weeklyMeta.weekKey = currentWeekKey();
+        saveTwlPointsData(twlPointsData);
+        return interaction.reply({ content: "✅ Reset TWL weekly points.", flags: MessageFlags.Ephemeral });
+      }
+
+      if (!targetUser) {
+        return interaction.reply({ content: "Pick a user.", flags: MessageFlags.Ephemeral });
+      }
+
+      if (action === "add") {
+        addTwlPoints(targetUser.id, Math.max(1, amount));
+      } else if (action === "take") {
+        addTwlPoints(targetUser.id, -Math.max(1, amount));
+      } else if (action === "set") {
+        const desired = Math.max(0, amount);
+        const curr = Number(twlPointsData.totals[targetUser.id]) || 0;
+        addTwlPoints(targetUser.id, desired - curr);
+      } else {
+        return interaction.reply({
+          content: "Use action: add | take | set | resetweekly",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const total = Number(twlPointsData.totals[targetUser.id]) || 0;
+      const weekly = Number(twlPointsData.weeklyCounts[targetUser.id]) || 0;
+
+      return interaction.reply({
+        content: `✅ Updated <@${targetUser.id}> — **${total}** total, **${weekly}** this week.`,
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     // /invites
