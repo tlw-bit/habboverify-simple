@@ -596,12 +596,13 @@ client.once("ready", async () => {
 
 // ====== XP STORAGE ======
 function loadXpDataSafe() {
-  const base = { users: {}, weeklyXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
+  const base = { users: {}, weeklyXp: {}, weeklyBonusXp: {}, weeklyMeta: { weekKey: getWeekKeyUTC() } };
 
   const normalize = (parsed) => {
     if (!parsed || typeof parsed !== "object") return { ...base };
     if (!parsed.users || typeof parsed.users !== "object") parsed.users = {};
     if (!parsed.weeklyXp || typeof parsed.weeklyXp !== "object") parsed.weeklyXp = {};
+    if (!parsed.weeklyBonusXp || typeof parsed.weeklyBonusXp !== "object") parsed.weeklyBonusXp = {};
     if (!parsed.weeklyMeta || typeof parsed.weeklyMeta !== "object") {
       parsed.weeklyMeta = { weekKey: getWeekKeyUTC() };
     }
@@ -654,6 +655,7 @@ function currentWeekKey() {
 
 function ensureWeeklyStores() {
   if (!xpData.weeklyXp || typeof xpData.weeklyXp !== "object") xpData.weeklyXp = {};
+  if (!xpData.weeklyBonusXp || typeof xpData.weeklyBonusXp !== "object") xpData.weeklyBonusXp = {};
   if (!xpData.weeklyMeta || typeof xpData.weeklyMeta !== "object") {
     xpData.weeklyMeta = { weekKey: currentWeekKey() };
   }
@@ -687,6 +689,7 @@ function maybeRollWeeklyData() {
   if (xpData.weeklyMeta.weekKey !== nowWeek) {
     xpData.weeklyMeta.weekKey = nowWeek;
     xpData.weeklyXp = {};
+    xpData.weeklyBonusXp = {};
     changed = true;
   }
 
@@ -724,6 +727,12 @@ async function postWeeklyLeaderboards(guild) {
     .sort((a, b) => b.xp - a.xp)
     .slice(0, 10);
 
+  const bonusEntries = Object.entries(xpData.weeklyBonusXp || {})
+    .map(([uid, xp]) => ({ uid, xp: Number(xp) || 0 }))
+    .filter((x) => x.xp > 0)
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, 10);
+
   const invEntries = Object.entries(invitesData.weeklyCounts || {})
     .map(([uid, invites]) => ({ uid, invites: Number(invites) || 0 }))
     .filter((x) => x.invites > 0)
@@ -731,11 +740,16 @@ async function postWeeklyLeaderboards(guild) {
     .slice(0, 10);
 
   const xpWinner = xpEntries[0] ? `<@${xpEntries[0].uid}>` : "No winner";
+  const bonusWinner = bonusEntries[0] ? `<@${bonusEntries[0].uid}>` : "No winner";
   const invWinner = invEntries[0] ? `<@${invEntries[0].uid}>` : "No winner";
 
   const xpLines = xpEntries.length
     ? xpEntries.map((x, i) => `**${i + 1}.** <@${x.uid}> — **${x.xp} XP**`).join("\n")
     : "No weekly XP yet.";
+
+  const bonusLines = bonusEntries.length
+    ? bonusEntries.map((x, i) => `**${i + 1}.** <@${x.uid}> — **${x.xp} Event XP**`).join("\n")
+    : "No weekly event XP yet.";
 
   const invLines = invEntries.length
     ? invEntries
@@ -755,17 +769,19 @@ async function postWeeklyLeaderboards(guild) {
     .setColor(0xf1c40f)
     .setDescription(
       `Weekly wrap-up is here!\n` +
-        `⭐ **XP Winner:** ${xpWinner}\n` +
+        `⭐ **Server XP Winner:** ${xpWinner}\n` +
+        `🎮 **Event XP Winner:** ${bonusWinner}\n` +
         `🎟️ **Invite Winner:** ${invWinner}`
     )
     .addFields(
-      { name: "Top XP (This Week)", value: xpLines },
+      { name: "Top Server XP (This Week)", value: xpLines },
+      { name: "Top Event XP (This Week)", value: bonusLines },
       { name: "Top Invites (This Week)", value: invLines },
       { name: "Top TWL Winners (This Week)", value: twlLines }
     )
     .setTimestamp();
 
-  const mentions = [xpEntries[0]?.uid, invEntries[0]?.uid, ...twlEntries.map((x) => x.uid)].filter(Boolean);
+  const mentions = [xpEntries[0]?.uid, bonusEntries[0]?.uid, invEntries[0]?.uid, ...twlEntries.map((x) => x.uid)].filter(Boolean);
 
   await target
     .send({
@@ -801,6 +817,7 @@ function startWeeklyLeaderboardScheduler() {
     invitesData.weeklyMeta.weekKey = currentWeekKey();
     twlPointsData.weeklyMeta.weekKey = currentWeekKey();
     xpData.weeklyXp = {};
+    xpData.weeklyBonusXp = {};
     invitesData.weeklyCounts = {};
     twlPointsData.weeklyCounts = {};
     xpData.weeklyMeta.lastPostedWeekTag = weekTag;
@@ -815,10 +832,17 @@ function startWeeklyLeaderboardScheduler() {
   }, 5 * 60 * 1000);
 }
 
+function adjustWeeklyBonusXp(userId, delta) {
+  ensureWeeklyStores();
+  const current = Number(xpData.weeklyBonusXp[userId] || 0);
+  xpData.weeklyBonusXp[userId] = Math.max(0, current + Number(delta || 0));
+}
+
 function ensureXpUser(userId) {
   if (!xpData.users[userId]) {
     xpData.users[userId] = {
       xp: 0,
+      bonusXp: 0,
       level: 1,
       prestige: 0,
       lastXpAt: 0,
@@ -827,6 +851,7 @@ function ensureXpUser(userId) {
       lastAnnouncedLevelAt: 0,
     };
   } else {
+    if (typeof xpData.users[userId].bonusXp !== "number") xpData.users[userId].bonusXp = 0;
     if (typeof xpData.users[userId].prestige !== "number") xpData.users[userId].prestige = 0;
     if (typeof xpData.users[userId].lastReactionXpAt !== "number") {
       xpData.users[userId].lastReactionXpAt = 0;
@@ -1398,29 +1423,35 @@ client.on("interactionCreate", async (interaction) => {
       const amount = interaction.options.getInteger("amount") ?? 0;
 
       const targetObj = ensureXpUser(targetUser.id);
+      const prevBonusXp = Number(targetObj.bonusXp || 0);
 
       if (action === "give") {
         if (amount <= 0)
           return interaction.reply({ content: "Amount must be > 0.", flags: MessageFlags.Ephemeral });
-        targetObj.xp += amount;
+        targetObj.bonusXp += amount;
+        adjustWeeklyBonusXp(targetUser.id, amount);
       }
 
       if (action === "take") {
         if (amount <= 0)
           return interaction.reply({ content: "Amount must be > 0.", flags: MessageFlags.Ephemeral });
-        targetObj.xp = Math.max(0, targetObj.xp - amount);
+        targetObj.bonusXp = Math.max(0, targetObj.bonusXp - amount);
+        adjustWeeklyBonusXp(targetUser.id, targetObj.bonusXp - prevBonusXp);
       }
 
       if (action === "set") {
         if (amount < 0)
           return interaction.reply({ content: "Amount can’t be negative.", flags: MessageFlags.Ephemeral });
-        targetObj.xp = amount;
+        targetObj.bonusXp = amount;
+        adjustWeeklyBonusXp(targetUser.id, targetObj.bonusXp - prevBonusXp);
       }
 
       if (action === "reset") {
         targetObj.xp = 0;
         targetObj.level = 1;
         targetObj.prestige = 0;
+        targetObj.bonusXp = 0;
+        adjustWeeklyBonusXp(targetUser.id, -prevBonusXp);
         targetObj.lastXpAt = 0;
         targetObj.lastReactionXpAt = 0;
         targetObj.lastAnnouncedLevel = 0;
@@ -1430,17 +1461,6 @@ client.on("interactionCreate", async (interaction) => {
       saveXpData(xpData);
 
       const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
-
-      // If give/set might push over thresholds, process level-ups
-      if (action === "give" || action === "set") {
-        await processLevelUps({
-          guild: interaction.guild,
-          channel: interaction.channel,
-          userObj: targetObj,
-          userDiscord: targetUser,
-          member,
-        }).catch(() => {});
-      }
 
       // Re-apply level roles (useful after reset)
       if (member) {
@@ -1454,8 +1474,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({
         content:
           `✅ Updated <@${targetUser.id}>.\n` +
-          `⭐ Prestige: **${targetObj.prestige || 0}** | Level: **${targetObj.level}** | XP: **${targetObj.xp}/${needed}**`,
-        flags: MessageFlags.Ephemeral,
+          `⭐ Prestige: **${targetObj.prestige || 0}** | Level: **${targetObj.level}** | Server XP: **${targetObj.xp}/${needed}** | Event XP: **${targetObj.bonusXp || 0}**`,
       });
     }
 
@@ -1468,7 +1487,8 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply(
         `🛎️ <@${u.id}> is **Status ${userObj.level}**` +
           (userObj.prestige ? ` (⭐ Prestige **${userObj.prestige}**)` : "") +
-          `\nReputation: **${userObj.xp}/${needed}**`
+          `\nServer Reputation: **${userObj.xp}/${needed}**` +
+          `\nEvent XP: **${userObj.bonusXp || 0}**`
       );
     }
 
