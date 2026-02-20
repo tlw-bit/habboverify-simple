@@ -838,6 +838,13 @@ function adjustWeeklyBonusXp(userId, delta) {
   xpData.weeklyBonusXp[userId] = Math.max(0, current + Number(delta || 0));
 }
 
+function adjustTwlPoints(userId, delta) {
+  maybeRollWeeklyData();
+  const add = Number(delta || 0);
+  twlPointsData.totals[userId] = Math.max(0, Number(twlPointsData.totals[userId] || 0) + add);
+  twlPointsData.weeklyCounts[userId] = Math.max(0, Number(twlPointsData.weeklyCounts[userId] || 0) + add);
+}
+
 function ensureXpUser(userId) {
   if (!xpData.users[userId]) {
     xpData.users[userId] = {
@@ -1430,20 +1437,25 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: "Amount must be > 0.", flags: MessageFlags.Ephemeral });
         targetObj.bonusXp += amount;
         adjustWeeklyBonusXp(targetUser.id, amount);
+        adjustTwlPoints(targetUser.id, amount);
       }
 
       if (action === "take") {
         if (amount <= 0)
           return interaction.reply({ content: "Amount must be > 0.", flags: MessageFlags.Ephemeral });
         targetObj.bonusXp = Math.max(0, targetObj.bonusXp - amount);
-        adjustWeeklyBonusXp(targetUser.id, targetObj.bonusXp - prevBonusXp);
+        const bonusDelta = targetObj.bonusXp - prevBonusXp;
+        adjustWeeklyBonusXp(targetUser.id, bonusDelta);
+        adjustTwlPoints(targetUser.id, bonusDelta);
       }
 
       if (action === "set") {
         if (amount < 0)
           return interaction.reply({ content: "Amount can’t be negative.", flags: MessageFlags.Ephemeral });
         targetObj.bonusXp = amount;
-        adjustWeeklyBonusXp(targetUser.id, targetObj.bonusXp - prevBonusXp);
+        const bonusDelta = targetObj.bonusXp - prevBonusXp;
+        adjustWeeklyBonusXp(targetUser.id, bonusDelta);
+        adjustTwlPoints(targetUser.id, bonusDelta);
       }
 
       if (action === "reset") {
@@ -1452,6 +1464,7 @@ client.on("interactionCreate", async (interaction) => {
         targetObj.prestige = 0;
         targetObj.bonusXp = 0;
         adjustWeeklyBonusXp(targetUser.id, -prevBonusXp);
+        adjustTwlPoints(targetUser.id, -prevBonusXp);
         targetObj.lastXpAt = 0;
         targetObj.lastReactionXpAt = 0;
         targetObj.lastAnnouncedLevel = 0;
@@ -1459,6 +1472,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       saveXpData(xpData);
+      saveTwlPointsData(twlPointsData);
 
       const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
 
