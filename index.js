@@ -1393,7 +1393,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      const action = interaction.options.getSubcommand(true);
+      const action = interaction.options.getString("action", true);
       const targetUser = interaction.options.getUser("user", true);
       const amount = interaction.options.getInteger("amount") ?? 0;
 
