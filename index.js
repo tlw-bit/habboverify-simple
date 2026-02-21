@@ -857,17 +857,16 @@ function ensureXpUser(userId) {
       lastAnnouncedLevelAt: 0,
     };
   } else {
-    if (typeof xpData.users[userId].bonusXp !== "number") xpData.users[userId].bonusXp = 0;
-    if (typeof xpData.users[userId].prestige !== "number") xpData.users[userId].prestige = 0;
-    if (typeof xpData.users[userId].lastReactionXpAt !== "number") {
-      xpData.users[userId].lastReactionXpAt = 0;
-    }
-    if (typeof xpData.users[userId].lastAnnouncedLevel !== "number") {
-      xpData.users[userId].lastAnnouncedLevel = 0;
-    }
-    if (typeof xpData.users[userId].lastAnnouncedLevelAt !== "number") {
-      xpData.users[userId].lastAnnouncedLevelAt = 0;
-    }
+    const user = xpData.users[userId];
+
+    user.xp = Math.max(0, Number(user.xp) || 0);
+    user.level = Math.max(1, Number(user.level) || 1);
+    user.lastXpAt = Math.max(0, Number(user.lastXpAt) || 0);
+    user.bonusXp = Math.max(0, Number(user.bonusXp) || 0);
+    user.prestige = Math.max(0, Number(user.prestige) || 0);
+    user.lastReactionXpAt = Math.max(0, Number(user.lastReactionXpAt) || 0);
+    user.lastAnnouncedLevel = Math.max(0, Number(user.lastAnnouncedLevel) || 0);
+    user.lastAnnouncedLevelAt = Math.max(0, Number(user.lastAnnouncedLevelAt) || 0);
   }
   return xpData.users[userId];
 }
