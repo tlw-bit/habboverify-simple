@@ -45,7 +45,6 @@ const XP_COOLDOWN_SECONDS = 30;
 const REACTION_XP_MIN = 8;
 const REACTION_XP_MAX = 15;
 const REACTION_XP_COOLDOWN_SECONDS = 45;
-const LEVEL_ANNOUNCE_DEDUPE_SECONDS = 60 * 60 * 6;
 
 const PRESTIGE_AT_LEVEL = 50; // prestige when reaching this level
 const PRESTIGE_RESET_LEVEL = 1; // new level after prestige
@@ -876,9 +875,10 @@ function ensureXpUser(userId) {
 function shouldAnnounceLevel(userObj, level) {
   const now = Date.now();
   const lastLevel = Number(userObj.lastAnnouncedLevel || 0);
-  const lastAt = Number(userObj.lastAnnouncedLevelAt || 0);
 
-  if (lastLevel === level && now - lastAt < LEVEL_ANNOUNCE_DEDUPE_SECONDS * 1000) {
+  // Announce each level only once per progression cycle.
+  // (A prestige reset moves users back to level 1, so lower levels can announce again naturally.)
+  if (lastLevel === level) {
     return false;
   }
 
