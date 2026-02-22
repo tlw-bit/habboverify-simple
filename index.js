@@ -195,6 +195,9 @@ const DEFAULT_ACCENT = "#5865f2";
 const INVITES_FILE = path.join(__dirname, "invites.json");
 const TWL_POINTS_FILE = process.env.TWL_POINTS_FILE || path.join(__dirname, "twl-points.json");
 const PENDING_CODES_FILE = process.env.PENDING_CODES_FILE || path.join(__dirname, "pending-codes.json");
+const VERIFY_CODE_TTL_MS = 15 * 60 * 1000;
+const VERIFY_DM_DEDUPE_MS = 12 * 1000;
+const ANNOUNCE_DEDUPE_WINDOW_MS = 20 * 1000;
 
 function getWeekKeyUTC(date = new Date()) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -288,7 +291,24 @@ function loadPendingCodesSafe() {
   if (!fs.existsSync(PENDING_CODES_FILE)) return {};
   try {
     const parsed = JSON.parse(fs.readFileSync(PENDING_CODES_FILE, "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : {};
+    if (!parsed || typeof parsed !== "object") return {};
+
+    const normalized = {};
+    for (const [userId, raw] of Object.entries(parsed)) {
+      if (typeof raw === "string") {
+        normalized[userId] = { code: raw, issuedAt: 0, lastDmAt: 0 };
+        continue;
+      }
+      if (!raw || typeof raw !== "object") continue;
+      const code = typeof raw.code === "string" ? raw.code : "";
+      if (!code) continue;
+      normalized[userId] = {
+        code,
+        issuedAt: Number(raw.issuedAt) || 0,
+        lastDmAt: Number(raw.lastDmAt) || 0,
+      };
+    }
+    return normalized;
   } catch {
     return {};
   }
@@ -300,6 +320,26 @@ function savePendingCodes() {
 }
 
 const pending = new Map(Object.entries(loadPendingCodesSafe()));
+
+function getPendingEntry(userId) {
+  const raw = pending.get(userId);
+  if (!raw) return null;
+  if (typeof raw === "string") return { code: raw, issuedAt: 0, lastDmAt: 0 };
+  if (!raw.code) return null;
+  return {
+    code: String(raw.code),
+    issuedAt: Number(raw.issuedAt) || 0,
+    lastDmAt: Number(raw.lastDmAt) || 0,
+  };
+}
+
+function setPendingEntry(userId, entry) {
+  pending.set(userId, {
+    code: String(entry.code),
+    issuedAt: Number(entry.issuedAt) || 0,
+    lastDmAt: Number(entry.lastDmAt) || 0,
+  });
+}
 
 function makeCode() {
   return "verify-" + Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -1164,7 +1204,21 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
     if (ch && ch.isTextBased()) targetChannel = ch;
   }
 
-  if (targetChannel) await targetChannel.send({ content: line }).catch(() => {});
+  if (!targetChannel) return;
+
+  try {
+    const recent = await targetChannel.messages.fetch({ limit: 8 });
+    const now = Date.now();
+    const duplicate = recent.find(
+      (m) =>
+        m.author?.id === client.user?.id &&
+        m.content === line &&
+        now - m.createdTimestamp <= ANNOUNCE_DEDUPE_WINDOW_MS
+    );
+    if (duplicate) return;
+  } catch {}
+
+  await targetChannel.send({ content: line }).catch(() => {});
 }
 
 async function processLevelUps({ guild, channel, userObj, userDiscord, member }) {
@@ -1741,8 +1795,26 @@ client.on("interactionCreate", async (interaction) => {
 
     // /getcode (DM + ephemeral reply)
     if (cmd === "getcode") {
-      const code = makeCode();
-      pending.set(interaction.user.id, code);
+      if (!(await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral }))) return;
+
+      const now = Date.now();
+      const existing = getPendingEntry(interaction.user.id);
+      const canReuse = existing && now - existing.issuedAt <= VERIFY_CODE_TTL_MS;
+
+      const code = canReuse ? existing.code : makeCode();
+      const entry = {
+        code,
+        issuedAt: canReuse ? existing.issuedAt : now,
+        lastDmAt: existing?.lastDmAt || 0,
+      };
+
+      // Avoid duplicate back-to-back DMs from retried interactions.
+      if (entry.lastDmAt && now - entry.lastDmAt < VERIFY_DM_DEDUPE_MS) {
+        return interaction.editReply("📩 I already DM’d your code. Please check your DMs.");
+      }
+
+      entry.lastDmAt = now;
+      setPendingEntry(interaction.user.id, entry);
       savePendingCodes();
 
       try {
@@ -1752,12 +1824,11 @@ client.on("interactionCreate", async (interaction) => {
             `\`/verify habbo:YourHabboNameSe\``
         );
 
-        return interaction.reply({ content: "📩 I’ve DM’d your code!", flags: MessageFlags.Ephemeral });
+        return interaction.editReply("📩 I’ve DM’d your code!");
       } catch {
-        return interaction.reply({
+        return interaction.editReply({
           content:
             "❌ I couldn’t DM you. Turn on **Allow direct messages** for this server, then try again.",
-          flags: MessageFlags.Ephemeral,
         });
       }
     }
@@ -1767,8 +1838,13 @@ client.on("interactionCreate", async (interaction) => {
       if (!(await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral }))) return;
 
       const name = interaction.options.getString("habbo", true).trim();
-      const code = pending.get(interaction.user.id);
-      if (!code) return interaction.editReply(`Use \`/getcode\` first.`);
+      const pendingEntry = getPendingEntry(interaction.user.id);
+      if (!pendingEntry || Date.now() - pendingEntry.issuedAt > VERIFY_CODE_TTL_MS) {
+        pending.delete(interaction.user.id);
+        savePendingCodes();
+        return interaction.editReply(`Use \`/getcode\` first.`);
+      }
+      const code = pendingEntry.code;
 
       try {
         const motto = await fetchHabboMotto(name);
