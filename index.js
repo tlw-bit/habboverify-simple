@@ -32,6 +32,7 @@ const WELCOME_CHANNEL_ID = "1456962809425559613";
 // ====== XP / LEVELING CONFIG ======
 const XP_FILE = process.env.XP_FILE || path.join(__dirname, "xp.json");
 const XP_FILE_BAK = `${XP_FILE}.bak`;
+const ANNOUNCE_LOCK_DIR = path.join(__dirname, ".announce-locks");
 
 // If you want XP only in specific channels, put IDs here. Leave [] to allow everywhere.
 const XP_ALLOWED_CHANNEL_IDS = []; // e.g. ["123", "456"]
@@ -115,19 +116,24 @@ const SLASH_COMMANDS = [
     ],
   },
   {
+    name: "twlresetall",
+    description: "Admin: reset all TWL points totals and period counts",
+  },
+  {
     name: "twladmin",
     description: "Admin TWL points controls",
     options: [
       {
         type: 3,
         name: "action",
-        description: "add / take / set / resetweekly",
+        description: "add / take / set / resetweekly / resetall",
         required: true,
         choices: [
           { name: "add", value: "add" },
           { name: "take", value: "take" },
           { name: "set", value: "set" },
           { name: "resetweekly", value: "resetweekly" },
+          { name: "resetall", value: "resetall" },
         ],
       },
       { type: 6, name: "user", description: "Target user", required: false },
@@ -698,11 +704,6 @@ function maybeRollWeeklyData() {
     changed = true;
   }
 
-  if (twlPointsData.weeklyMeta.weekKey !== nowWeek) {
-    twlPointsData.weeklyMeta.weekKey = nowWeek;
-    twlPointsData.weeklyCounts = {};
-    changed = true;
-  }
 
   if (changed) {
     saveXpData(xpData);
@@ -814,11 +815,9 @@ function startWeeklyLeaderboardScheduler() {
 
     xpData.weeklyMeta.weekKey = currentWeekKey();
     invitesData.weeklyMeta.weekKey = currentWeekKey();
-    twlPointsData.weeklyMeta.weekKey = currentWeekKey();
     xpData.weeklyXp = {};
     xpData.weeklyBonusXp = {};
     invitesData.weeklyCounts = {};
-    twlPointsData.weeklyCounts = {};
     xpData.weeklyMeta.lastPostedWeekTag = weekTag;
     saveXpData(xpData);
     saveInvitesData(invitesData);
@@ -884,6 +883,42 @@ function shouldAnnounceLevel(userObj, level) {
   userObj.lastAnnouncedLevel = level;
   userObj.lastAnnouncedLevelAt = now;
   return true;
+}
+
+function ensureAnnounceLockDir() {
+  if (!fs.existsSync(ANNOUNCE_LOCK_DIR)) {
+    fs.mkdirSync(ANNOUNCE_LOCK_DIR, { recursive: true });
+  }
+}
+
+async function withLevelAnnouncementLock(userId, level, fn) {
+  ensureAnnounceLockDir();
+
+  const lockPath = path.join(ANNOUNCE_LOCK_DIR, `${userId}-${level}.lock`);
+  const staleMs = 30 * 1000;
+
+  try {
+    const stat = fs.existsSync(lockPath) ? fs.statSync(lockPath) : null;
+    if (stat && Date.now() - stat.mtimeMs > staleMs) {
+      fs.unlinkSync(lockPath);
+    }
+  } catch {}
+
+  let handle;
+  try {
+    handle = fs.openSync(lockPath, "wx");
+  } catch {
+    return;
+  }
+
+  try {
+    await fn();
+  } finally {
+    try {
+      if (typeof handle === "number") fs.closeSync(handle);
+      if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+    } catch {}
+  }
 }
 
 // XP curve
@@ -1147,7 +1182,9 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
 
       // announce the level 50 line
       if (shouldAnnounceLevel(userObj, PRESTIGE_AT_LEVEL)) {
-        await announceLevelUp(guild, channel, userDiscord, PRESTIGE_AT_LEVEL).catch(() => {});
+        await withLevelAnnouncementLock(userDiscord.id, PRESTIGE_AT_LEVEL, async () => {
+          await announceLevelUp(guild, channel, userDiscord, PRESTIGE_AT_LEVEL).catch(() => {});
+        });
       }
 
       // prestige message
@@ -1176,7 +1213,9 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
     }
 
     if (shouldAnnounceLevel(userObj, userObj.level)) {
-      await announceLevelUp(guild, channel, userDiscord, userObj.level).catch(() => {});
+      await withLevelAnnouncementLock(userDiscord.id, userObj.level, async () => {
+        await announceLevelUp(guild, channel, userDiscord, userObj.level).catch(() => {});
+      });
     }
     if (member) await applyLevelRoles(member, userObj.level).catch(() => {});
   }
@@ -1230,7 +1269,8 @@ client.on("messageCreate", async (message) => {
               "`!twl add @user [amount]` - admin add points\n" +
               "`!twl take @user [amount]` - admin remove points\n" +
               "`!twl set @user <amount>` - admin set total points\n" +
-              "`!twl resetweekly` - admin reset weekly points"
+              "`!twl resetweekly` - admin reset period points\n" +
+              "`!twl resetall` - admin reset ALL TWL points"
           )
           .catch(() => {});
         return;
@@ -1271,7 +1311,16 @@ client.on("messageCreate", async (message) => {
         twlPointsData.weeklyCounts = {};
         twlPointsData.weeklyMeta.weekKey = currentWeekKey();
         saveTwlPointsData(twlPointsData);
-        await message.channel.send("✅ Reset TWL weekly points.").catch(() => {});
+        await message.channel.send("✅ Reset TWL period points.").catch(() => {});
+        return;
+      }
+
+      if (sub === "resetall") {
+        twlPointsData.totals = {};
+        twlPointsData.weeklyCounts = {};
+        twlPointsData.weeklyMeta.weekKey = currentWeekKey();
+        saveTwlPointsData(twlPointsData);
+        await message.channel.send("✅ Reset ALL TWL points.").catch(() => {});
         return;
       }
 
@@ -1534,6 +1583,26 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ embeds: [embed] });
     }
 
+    if (cmd === "twlresetall") {
+      const perms = interaction.memberPermissions;
+      const isAllowed =
+        perms?.has(PermissionsBitField.Flags.Administrator) ||
+        perms?.has(PermissionsBitField.Flags.ManageGuild);
+
+      if (!isAllowed) {
+        return interaction.reply({
+          content: "❌ You don’t have permission to use this.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      twlPointsData.totals = {};
+      twlPointsData.weeklyCounts = {};
+      twlPointsData.weeklyMeta.weekKey = currentWeekKey();
+      saveTwlPointsData(twlPointsData);
+      return interaction.reply({ content: "✅ Reset ALL TWL points.", flags: MessageFlags.Ephemeral });
+    }
+
     // /twladmin
     if (cmd === "twladmin") {
       const perms = interaction.memberPermissions;
@@ -1556,7 +1625,15 @@ client.on("interactionCreate", async (interaction) => {
         twlPointsData.weeklyCounts = {};
         twlPointsData.weeklyMeta.weekKey = currentWeekKey();
         saveTwlPointsData(twlPointsData);
-        return interaction.reply({ content: "✅ Reset TWL weekly points.", flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: "✅ Reset TWL period points.", flags: MessageFlags.Ephemeral });
+      }
+
+      if (action === "resetall") {
+        twlPointsData.totals = {};
+        twlPointsData.weeklyCounts = {};
+        twlPointsData.weeklyMeta.weekKey = currentWeekKey();
+        saveTwlPointsData(twlPointsData);
+        return interaction.reply({ content: "✅ Reset ALL TWL points.", flags: MessageFlags.Ephemeral });
       }
 
       if (!targetUser) {
@@ -1573,7 +1650,7 @@ client.on("interactionCreate", async (interaction) => {
         addTwlPoints(targetUser.id, desired - curr);
       } else {
         return interaction.reply({
-          content: "Use action: add | take | set | resetweekly",
+          content: "Use action: add | take | set | resetweekly | resetall",
           flags: MessageFlags.Ephemeral,
         });
       }
