@@ -893,6 +893,7 @@ function ensureXpUser(userId) {
       lastXpAt: 0,
       lastReactionXpAt: 0,
       lastAnnouncedLevel: 0,
+      lastAnnouncedPrestige: 0,
       lastAnnouncedLevelAt: 0,
     };
   } else {
@@ -905,6 +906,7 @@ function ensureXpUser(userId) {
     user.prestige = Math.max(0, Number(user.prestige) || 0);
     user.lastReactionXpAt = Math.max(0, Number(user.lastReactionXpAt) || 0);
     user.lastAnnouncedLevel = Math.max(0, Number(user.lastAnnouncedLevel) || 0);
+    user.lastAnnouncedPrestige = Math.max(0, Number(user.lastAnnouncedPrestige) || 0);
     user.lastAnnouncedLevelAt = Math.max(0, Number(user.lastAnnouncedLevelAt) || 0);
   }
   return xpData.users[userId];
@@ -912,15 +914,18 @@ function ensureXpUser(userId) {
 
 function shouldAnnounceLevel(userObj, level) {
   const now = Date.now();
+  const currentPrestige = Math.max(0, Number(userObj.prestige) || 0);
   const lastLevel = Number(userObj.lastAnnouncedLevel || 0);
+  const lastPrestige = Math.max(0, Number(userObj.lastAnnouncedPrestige) || 0);
 
-  // Announce each level only once per progression cycle.
-  // (A prestige reset moves users back to level 1, so lower levels can announce again naturally.)
-  if (lastLevel === level) {
+  // Announce each level only once per prestige cycle.
+  // If a stale write ever regresses level data, don't re-announce lower/equal levels.
+  if (currentPrestige === lastPrestige && level <= lastLevel) {
     return false;
   }
 
   userObj.lastAnnouncedLevel = level;
+  userObj.lastAnnouncedPrestige = currentPrestige;
   userObj.lastAnnouncedLevelAt = now;
   return true;
 }
@@ -1233,6 +1238,8 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
       // reset
       userObj.level = PRESTIGE_RESET_LEVEL;
       userObj.xp = PRESTIGE_RESET_XP;
+      userObj.lastAnnouncedLevel = 0;
+      userObj.lastAnnouncedPrestige = userObj.prestige;
 
       // announce the level 50 line
       if (shouldAnnounceLevel(userObj, PRESTIGE_AT_LEVEL)) {
