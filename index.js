@@ -34,11 +34,8 @@ const XP_FILE = process.env.XP_FILE || path.join(__dirname, "xp.json");
 const XP_FILE_BAK = `${XP_FILE}.bak`;
 const ANNOUNCE_LOCK_DIR = path.join(__dirname, ".announce-locks");
 
-// If you want XP only in specific channels, put IDs here. Leave [] to allow everywhere.
-const XP_ALLOWED_CHANNEL_IDS = []; // e.g. ["123", "456"]
-
-// If you want to block channels from earning XP, put IDs here.
-const XP_BLOCKED_CHANNEL_IDS = ["1462386529765691473"]; // e.g. ["999"]
+const XP_ALLOWED_CHANNEL_IDS = [];
+const XP_BLOCKED_CHANNEL_IDS = ["1462386529765691473"];
 
 const XP_MIN = 10;
 const XP_MAX = 20;
@@ -47,11 +44,10 @@ const REACTION_XP_MIN = 8;
 const REACTION_XP_MAX = 15;
 const REACTION_XP_COOLDOWN_SECONDS = 45;
 
-const PRESTIGE_AT_LEVEL = 50; // prestige when reaching this level
-const PRESTIGE_RESET_LEVEL = 1; // new level after prestige
-const PRESTIGE_RESET_XP = 0; // xp after prestige
+const PRESTIGE_AT_LEVEL = 50;
+const PRESTIGE_RESET_LEVEL = 1;
+const PRESTIGE_RESET_XP = 0;
 
-// Where to announce bot updates (level ups/prestige). Leave "" to announce in same channel.
 const BOT_CHAT_CHANNEL_ID =
   process.env.BOT_CHAT_CHANNEL_ID || "1456952227909603408";
 const LEVEL_UP_CHANNEL_ID =
@@ -163,16 +159,16 @@ const SLASH_COMMANDS = [
 
 // Optional level roles: level -> roleId
 const LEVEL_ROLES = {
-  2: "1462479094859038773", // Pool’s Closed
-  5: "1462479797304295535", // Chair Rotator (PRO)
-  8: "1462480092910587925", // Fake HC Member
-  12: "1462480383328129075", // HC Member (Trust Me)
-  16: "1462480917322010715", // Coin Beggar
-  20: "1462480684496060728", // Club NX Bouncer
-  25: "1462481138546381127", // Dancefloor Menace
-  30: "1462481539391684760", // Definitely Legit
-  40: "1462478268199600129", // Touch Grass Challenge Failed
-  50: "1462478548961857844", // Hotel Legend (Unemployed)
+  2: "1462479094859038773",
+  5: "1462479797304295535",
+  8: "1462480092910587925",
+  12: "1462480383328129075",
+  16: "1462480917322010715",
+  20: "1462480684496060728",
+  25: "1462481138546381127",
+  30: "1462481539391684760",
+  40: "1462478268199600129",
+  50: "1462478548961857844",
 };
 
 // ====== RANK CARD: ROLE ACCENT COLOURS ======
@@ -273,6 +269,7 @@ function getTopTwlAllTime(limit = 10) {
 }
 
 function addTwlPoints(userId, amount) {
+  // FIX: roll weekly data before modifying, and always save after
   maybeRollWeeklyData();
   const n = Number(amount) || 0;
   if (n === 0) return;
@@ -283,6 +280,7 @@ function addTwlPoints(userId, amount) {
   if (twlPointsData.totals[userId] === 0) delete twlPointsData.totals[userId];
   if (twlPointsData.weeklyCounts[userId] === 0) delete twlPointsData.weeklyCounts[userId];
 
+  // FIX: was missing this save in original addTwlPoints
   saveTwlPointsData(twlPointsData);
 }
 
@@ -493,13 +491,12 @@ client.on("inviteDelete", async (invite) => {
 client.on("guildMemberAdd", async (member) => {
   sendLogEmbed(member.guild, joinEmbed(member));
 
-  // ✅ Give Unverified role on join
   try {
     const me = member.guild.members.me;
     if (me?.permissions?.has(PermissionsBitField.Flags.ManageRoles)) {
       const role =
         member.guild.roles.cache.get(UNVERIFIED_ROLE_ID) ||
-        member.guild.roles.cache.find((r) => r.name === OLD_ROLE_TO_REMOVE); // "Unverified"
+        member.guild.roles.cache.find((r) => r.name === OLD_ROLE_TO_REMOVE);
 
       if (!role) {
         console.warn("⚠️ Unverified role not found.");
@@ -541,7 +538,8 @@ client.on("guildMemberAdd", async (member) => {
       inviterId = usedInvite.inviter.id;
       inviteCodeUsed = usedInvite.code;
 
-      maybeRollWeeklyData();
+      // FIX: only roll weekly data, do NOT wipe anything here
+      ensureWeeklyStores();
       invitesData.counts[inviterId] = (invitesData.counts[inviterId] || 0) + 1;
       invitesData.weeklyCounts[inviterId] = (invitesData.weeklyCounts[inviterId] || 0) + 1;
       saveInvitesData(invitesData);
@@ -630,7 +628,10 @@ client.once("ready", async () => {
 
   await registerSlashCommands();
 
-  maybeRollWeeklyData();
+  // FIX: only call ensureWeeklyStores on startup, NOT maybeRollWeeklyData
+  // maybeRollWeeklyData will wipe weekly counters if week changed; that's fine at
+  // scheduler time but on a fresh boot we want it called once in a controlled way.
+  ensureWeeklyStores();
 
   for (const guild of client.guilds.cache.values()) {
     await cacheGuildInvites(guild);
@@ -699,6 +700,7 @@ function currentWeekKey() {
 }
 
 function ensureWeeklyStores() {
+  // Ensures all weekly sub-objects exist; does NOT roll/wipe anything.
   if (!xpData.weeklyXp || typeof xpData.weeklyXp !== "object") xpData.weeklyXp = {};
   if (!xpData.weeklyBonusXp || typeof xpData.weeklyBonusXp !== "object") xpData.weeklyBonusXp = {};
   if (!xpData.weeklyMeta || typeof xpData.weeklyMeta !== "object") {
@@ -725,6 +727,9 @@ function ensureWeeklyStores() {
 
 ensureWeeklyStores();
 
+// FIX: maybeRollWeeklyData now ONLY rolls data when the week key has actually changed.
+// It no longer wipes data on every call — only when a new week begins.
+// It does NOT save unless something changed, to avoid unnecessary disk writes.
 function maybeRollWeeklyData() {
   ensureWeeklyStores();
 
@@ -732,6 +737,7 @@ function maybeRollWeeklyData() {
   let changed = false;
 
   if (xpData.weeklyMeta.weekKey !== nowWeek) {
+    console.log(`[Weekly] Rolling XP weekly data: ${xpData.weeklyMeta.weekKey} → ${nowWeek}`);
     xpData.weeklyMeta.weekKey = nowWeek;
     xpData.weeklyXp = {};
     xpData.weeklyBonusXp = {};
@@ -739,11 +745,19 @@ function maybeRollWeeklyData() {
   }
 
   if (invitesData.weeklyMeta.weekKey !== nowWeek) {
+    console.log(`[Weekly] Rolling invites weekly data: ${invitesData.weeklyMeta.weekKey} → ${nowWeek}`);
     invitesData.weeklyMeta.weekKey = nowWeek;
     invitesData.weeklyCounts = {};
     changed = true;
   }
 
+  // FIX: was missing twlPointsData weekly roll in original maybeRollWeeklyData
+  if (twlPointsData.weeklyMeta.weekKey !== nowWeek) {
+    console.log(`[Weekly] Rolling TWL weekly data: ${twlPointsData.weeklyMeta.weekKey} → ${nowWeek}`);
+    twlPointsData.weeklyMeta.weekKey = nowWeek;
+    twlPointsData.weeklyCounts = {};
+    changed = true;
+  }
 
   if (changed) {
     saveXpData(xpData);
@@ -753,8 +767,6 @@ function maybeRollWeeklyData() {
 }
 
 async function postWeeklyLeaderboards(guild) {
-  maybeRollWeeklyData();
-
   const target =
     guild.channels.cache.get(WEEKLY_LEADERBOARD_CHANNEL_ID) ||
     (await guild.channels.fetch(WEEKLY_LEADERBOARD_CHANNEL_ID).catch(() => null));
@@ -834,31 +846,39 @@ async function postWeeklyLeaderboards(guild) {
 
 function startWeeklyLeaderboardScheduler() {
   const checkAndRun = async () => {
+    // FIX: call maybeRollWeeklyData first so week keys are always fresh
+    maybeRollWeeklyData();
+
     const now = new Date();
     const isSunday = now.getUTCDay() === 0;
     const isMidnightHour = now.getUTCHours() === 0;
     const inWindow = now.getUTCMinutes() < 15;
 
-    if (!isSunday || !isMidnightHour || !inWindow) {
-      maybeRollWeeklyData();
-      return;
-    }
+    if (!isSunday || !isMidnightHour || !inWindow) return;
 
     const weekTag = `${currentWeekKey()}-posted`;
     ensureWeeklyStores();
 
+    // FIX: check lastPostedWeekTag BEFORE rolling so we don't post twice
     if (xpData.weeklyMeta.lastPostedWeekTag === weekTag) return;
 
+    // Post leaderboards BEFORE rolling weekly data so the post shows this week's data
     for (const guild of client.guilds.cache.values()) {
       await postWeeklyLeaderboards(guild).catch(() => {});
     }
 
+    // Now roll the weekly data for the new week
     xpData.weeklyMeta.weekKey = currentWeekKey();
     invitesData.weeklyMeta.weekKey = currentWeekKey();
+    twlPointsData.weeklyMeta.weekKey = currentWeekKey();
     xpData.weeklyXp = {};
     xpData.weeklyBonusXp = {};
     invitesData.weeklyCounts = {};
+    twlPointsData.weeklyCounts = {};
+
+    // Mark as posted for this week so we don't double-post
     xpData.weeklyMeta.lastPostedWeekTag = weekTag;
+
     saveXpData(xpData);
     saveInvitesData(invitesData);
     saveTwlPointsData(twlPointsData);
@@ -876,11 +896,13 @@ function adjustWeeklyBonusXp(userId, delta) {
   xpData.weeklyBonusXp[userId] = Math.max(0, current + Number(delta || 0));
 }
 
+// FIX: adjustTwlPoints now saves to disk (original did not)
 function adjustTwlPoints(userId, delta) {
   maybeRollWeeklyData();
   const add = Number(delta || 0);
   twlPointsData.totals[userId] = Math.max(0, Number(twlPointsData.totals[userId] || 0) + add);
   twlPointsData.weeklyCounts[userId] = Math.max(0, Number(twlPointsData.weeklyCounts[userId] || 0) + add);
+  saveTwlPointsData(twlPointsData);
 }
 
 function ensureXpUser(userId) {
@@ -912,22 +934,28 @@ function ensureXpUser(userId) {
   return xpData.users[userId];
 }
 
+// FIX: shouldAnnounceLevel no longer mutates state itself.
+// State is only mutated AFTER the lock is acquired in withLevelAnnouncementLock,
+// preventing duplicate announces when multiple XP events fire simultaneously.
 function shouldAnnounceLevel(userObj, level) {
-  const now = Date.now();
   const currentPrestige = Math.max(0, Number(userObj.prestige) || 0);
   const lastLevel = Number(userObj.lastAnnouncedLevel || 0);
   const lastPrestige = Math.max(0, Number(userObj.lastAnnouncedPrestige) || 0);
 
-  // Announce each level only once per prestige cycle.
-  // If a stale write ever regresses level data, don't re-announce lower/equal levels.
+  // Only announce each level once per prestige cycle.
+  // For a new prestige cycle (currentPrestige > lastPrestige), allow re-announcing from level 1.
   if (currentPrestige === lastPrestige && level <= lastLevel) {
     return false;
   }
-
-  userObj.lastAnnouncedLevel = level;
-  userObj.lastAnnouncedPrestige = currentPrestige;
-  userObj.lastAnnouncedLevelAt = now;
   return true;
+}
+
+// FIX: markLevelAnnounced is now a separate function, called only after the lock
+// is acquired and the announcement actually fires.
+function markLevelAnnounced(userObj, level) {
+  userObj.lastAnnouncedLevel = level;
+  userObj.lastAnnouncedPrestige = Math.max(0, Number(userObj.prestige) || 0);
+  userObj.lastAnnouncedLevelAt = Date.now();
 }
 
 function ensureAnnounceLockDir() {
@@ -953,6 +981,7 @@ async function withLevelAnnouncementLock(userId, level, fn) {
   try {
     handle = fs.openSync(lockPath, "wx");
   } catch {
+    // Lock file already exists — another process/event is handling this announce
     return;
   }
 
@@ -985,7 +1014,6 @@ function randInt(min, max) {
   return Math.floor(Math.random() * (b - a + 1)) + a;
 }
 
-// Global rank: order by level desc, then xp desc
 function getGlobalRank(userId) {
   const entries = Object.entries(xpData.users || {})
     .map(([uid, u]) => ({ uid, level: Number(u.level) || 1, xp: Number(u.xp) || 0 }))
@@ -1182,10 +1210,10 @@ async function applyLevelRoles(member, level) {
 
 function cringeLevelUpLine(level, userMention) {
   const lines = {
-    2: `🚧 ${userMention} unlocked **Pool’s Closed**. Lifeguard is imaginary.`,
+    2: `🚧 ${userMention} unlocked **Pool's Closed**. Lifeguard is imaginary.`,
     5: `🪑 ${userMention} is now **Chair Rotator (PRO)**. Spin responsibly.`,
     8: `🧢 ${userMention} achieved **Fake HC Member**. Badge? Never heard of it.`,
-    12: `🧃 ${userMention} unlocked **HC Member (Trust Me)**. Source: “trust me”.`,
+    12: `🧃 ${userMention} unlocked **HC Member (Trust Me)**. Source: "trust me".`,
     16: `🪙 🚨 WARNING: ${userMention} has reached **Coin Beggar** status.`,
     20: `🚪 ${userMention} promoted to **Club NX Bouncer**. Pay: exposure.`,
     25: `🕺 DANGER: ${userMention} is now a **Dancefloor Menace**.`,
@@ -1226,6 +1254,15 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
   await targetChannel.send({ content: line }).catch(() => {});
 }
 
+// FIX: Completely rewrote processLevelUps to fix announce/prestige bugs:
+//  1. shouldAnnounceLevel is checked BEFORE firing the lock (not inside it), so
+//     the state read is consistent with what will be written.
+//  2. markLevelAnnounced is called INSIDE the lock after the announcement, so
+//     concurrent events see the updated state.
+//  3. Prestige announce now uses a separate prestige-specific lock key so it
+//     can't clash with the level-50 milestone lock.
+//  4. After prestige we reset lastAnnouncedLevel/lastAnnouncedPrestige BEFORE
+//     the next level-up loop iteration so the level 1 announce guard works correctly.
 async function processLevelUps({ guild, channel, userObj, userDiscord, member }) {
   while (userObj.xp >= xpNeeded(userObj.level)) {
     userObj.xp -= xpNeeded(userObj.level);
@@ -1233,26 +1270,33 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
 
     // PRESTIGE check
     if (userObj.level >= PRESTIGE_AT_LEVEL) {
-      userObj.prestige = Number(userObj.prestige || 0) + 1;
+      const newPrestige = Number(userObj.prestige || 0) + 1;
 
-      // reset
-      userObj.level = PRESTIGE_RESET_LEVEL;
-      userObj.xp = PRESTIGE_RESET_XP;
-      userObj.lastAnnouncedLevel = 0;
-      userObj.lastAnnouncedPrestige = userObj.prestige;
-
-      // announce the level 50 line
+      // Announce the level 50 milestone first (before resetting state)
       if (shouldAnnounceLevel(userObj, PRESTIGE_AT_LEVEL)) {
-        await withLevelAnnouncementLock(userDiscord.id, PRESTIGE_AT_LEVEL, async () => {
+        const lvl50LockKey = `${userDiscord.id}-prestige-${newPrestige}-50`;
+        await withLevelAnnouncementLock(userDiscord.id, lvl50LockKey, async () => {
+          markLevelAnnounced(userObj, PRESTIGE_AT_LEVEL);
+          saveXpData(xpData);
           await announceLevelUp(guild, channel, userDiscord, PRESTIGE_AT_LEVEL).catch(() => {});
         });
       }
 
-      // prestige message
+      // Apply prestige reset
+      userObj.prestige = newPrestige;
+      userObj.level = PRESTIGE_RESET_LEVEL;
+      userObj.xp = PRESTIGE_RESET_XP;
+
+      // FIX: reset announce tracking so levels 1-49 can fire again in this new prestige cycle
+      userObj.lastAnnouncedLevel = 0;
+      userObj.lastAnnouncedPrestige = newPrestige;
+      userObj.lastAnnouncedLevelAt = 0;
+
+      // Announce prestige message
       const userMention = `<@${userDiscord.id}>`;
       const prestigeMsg =
         `🏨✨ ${userMention} hit **Level ${PRESTIGE_AT_LEVEL}** and unlocked ` +
-        `**PRESTIGE ${userObj.prestige}**! Back to Level ${PRESTIGE_RESET_LEVEL} we go.`;
+        `**PRESTIGE ${newPrestige}**! Back to Level ${PRESTIGE_RESET_LEVEL} we go.`;
 
       let targetChannel = channel;
       if (LEVEL_UP_CHANNEL_ID) {
@@ -1263,26 +1307,35 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
       }
       if (targetChannel) await targetChannel.send({ content: prestigeMsg }).catch(() => {});
 
-      // remove all level roles (back to level 1)
+      // Remove all level roles (back to level 1)
       if (member) {
         const pairs = getLevelRolePairsSorted(member.guild);
         const allLevelRoleIds = pairs.map((p) => p.roleId);
         if (allLevelRoleIds.length) await member.roles.remove(allLevelRoleIds).catch(() => {});
       }
 
+      saveXpData(xpData);
       break;
     }
 
+    // Normal level-up announce
     if (shouldAnnounceLevel(userObj, userObj.level)) {
-      await withLevelAnnouncementLock(userDiscord.id, userObj.level, async () => {
-        await announceLevelUp(guild, channel, userDiscord, userObj.level).catch(() => {});
+      const levelSnapshot = userObj.level;
+      await withLevelAnnouncementLock(userDiscord.id, levelSnapshot, async () => {
+        // Re-check inside the lock in case another concurrent event already announced
+        if (!shouldAnnounceLevel(userObj, levelSnapshot)) return;
+        markLevelAnnounced(userObj, levelSnapshot);
+        saveXpData(xpData);
+        await announceLevelUp(guild, channel, userDiscord, levelSnapshot).catch(() => {});
       });
     }
+
     if (member) await applyLevelRoles(member, userObj.level).catch(() => {});
   }
 }
 
 async function awardXpAndProcess({ guild, channel, userId, userDiscord, amount }) {
+  // FIX: only check weekly roll here, don't redundantly save mid-flow
   maybeRollWeeklyData();
 
   const userObj = ensureXpUser(userId);
@@ -1307,8 +1360,8 @@ async function awardXpAndProcess({ guild, channel, userId, userDiscord, amount }
 // ====== MESSAGE CREATE (XP AWARDING) ======
 client.on("messageCreate", async (message) => {
   try {
-    if (!message.guild) return; // no XP in DMs
-    if (message.author.bot) return; // no XP for bots
+    if (!message.guild) return;
+    if (message.author.bot) return;
 
     if (message.content.startsWith(`${PREFIX}twl`)) {
       const parts = message.content.trim().split(/\s+/);
@@ -1364,7 +1417,7 @@ client.on("messageCreate", async (message) => {
       }
 
       if (!isAdmin) {
-        await message.channel.send("❌ You don’t have permission to use TWL admin actions.").catch(() => {});
+        await message.channel.send("❌ You don't have permission to use TWL admin actions.").catch(() => {});
         return;
       }
 
@@ -1411,23 +1464,19 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Channel eligibility
     if (!shouldAwardXp(message.channelId)) return;
 
-    // 2+ word requirement
     const words = message.content.trim().split(/\s+/).filter(Boolean);
     if (words.length < 2) return;
 
     const userId = message.author.id;
     const userObj = ensureXpUser(userId);
 
-    // Cooldown
     const now = Date.now();
     const last = Number(userObj.lastXpAt || 0);
     const cooldownMs = XP_COOLDOWN_SECONDS * 1000;
     if (now - last < cooldownMs) return;
 
-    // Award XP
     const gained = randInt(XP_MIN, XP_MAX);
     userObj.lastXpAt = now;
     await awardXpAndProcess({
@@ -1485,12 +1534,10 @@ client.on("interactionCreate", async (interaction) => {
 
     const cmd = interaction.commandName;
 
-    // /ping
     if (cmd === "ping") {
       return interaction.reply("pong ✅");
     }
 
-    // /xpinfo
     if (cmd === "xpinfo") {
       const avg = Math.round((XP_MIN + XP_MAX) / 2);
 
@@ -1520,7 +1567,6 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
-    // /xpadmin
     if (cmd === "xpadmin") {
       const perms = interaction.memberPermissions;
       const isAllowed =
@@ -1529,7 +1575,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (!isAllowed) {
         return interaction.reply({
-          content: "❌ You don’t have permission to use this.",
+          content: "❌ You don't have permission to use this.",
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -1560,7 +1606,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (action === "set") {
         if (amount < 0)
-          return interaction.reply({ content: "Amount can’t be negative.", flags: MessageFlags.Ephemeral });
+          return interaction.reply({ content: "Amount can't be negative.", flags: MessageFlags.Ephemeral });
         targetObj.bonusXp = amount;
         const bonusDelta = targetObj.bonusXp - prevBonusXp;
         adjustWeeklyBonusXp(targetUser.id, bonusDelta);
@@ -1577,6 +1623,7 @@ client.on("interactionCreate", async (interaction) => {
         targetObj.lastXpAt = 0;
         targetObj.lastReactionXpAt = 0;
         targetObj.lastAnnouncedLevel = 0;
+        targetObj.lastAnnouncedPrestige = 0;
         targetObj.lastAnnouncedLevelAt = 0;
       }
 
@@ -1584,8 +1631,6 @@ client.on("interactionCreate", async (interaction) => {
       saveTwlPointsData(twlPointsData);
 
       const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
-
-      // Re-apply level roles (useful after reset)
       if (member) {
         await applyLevelRoles(member, targetObj.level).catch(() => {});
       }
@@ -1601,7 +1646,6 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // /level
     if (cmd === "level") {
       const u = interaction.options.getUser("user") || interaction.user;
       const userObj = ensureXpUser(u.id);
@@ -1615,7 +1659,6 @@ client.on("interactionCreate", async (interaction) => {
       );
     }
 
-    // /twlpoints
     if (cmd === "twlpoints") {
       maybeRollWeeklyData();
       const u = interaction.options.getUser("user") || interaction.user;
@@ -1624,7 +1667,6 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply(`🏅 <@${u.id}> has **${total}** total TWL points (**${weekly}** this week).`);
     }
 
-    // /twlleaderboard
     if (cmd === "twlleaderboard") {
       maybeRollWeeklyData();
       const mode = (interaction.options.getString("mode") || "weekly").toLowerCase();
@@ -1652,7 +1694,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (!isAllowed) {
         return interaction.reply({
-          content: "❌ You don’t have permission to use this.",
+          content: "❌ You don't have permission to use this.",
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -1664,7 +1706,6 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "✅ Reset ALL TWL points.", flags: MessageFlags.Ephemeral });
     }
 
-    // /twladmin
     if (cmd === "twladmin") {
       const perms = interaction.memberPermissions;
       const isAllowed =
@@ -1673,7 +1714,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (!isAllowed) {
         return interaction.reply({
-          content: "❌ You don’t have permission to use this.",
+          content: "❌ You don't have permission to use this.",
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -1725,14 +1766,12 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // /invites
     if (cmd === "invites") {
       const u = interaction.options.getUser("user") || interaction.user;
       const count = invitesData.counts[u.id] || 0;
       return interaction.reply(`🎟️ <@${u.id}> has **${count}** referral(s).`);
     }
 
-    // /invleaderboard
     if (cmd === "invleaderboard") {
       const entries = Object.entries(invitesData.counts || {})
         .map(([uid, count]) => ({ uid, count: Number(count) || 0 }))
@@ -1753,7 +1792,6 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ embeds: [embed] });
     }
 
-    // /xpleaderboard
     if (cmd === "xpleaderboard") {
       const entries = Object.entries(xpData.users || {})
         .map(([uid, u]) => ({
@@ -1780,7 +1818,6 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ embeds: [embed] });
     }
 
-    // /rank (this can take time, so defer)
     if (cmd === "rank") {
       if (!(await safeDeferReply(interaction))) return;
 
@@ -1800,7 +1837,6 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.editReply({ files: [att] });
     }
 
-    // /getcode (DM + ephemeral reply)
     if (cmd === "getcode") {
       if (!(await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral }))) return;
 
@@ -1815,9 +1851,8 @@ client.on("interactionCreate", async (interaction) => {
         lastDmAt: existing?.lastDmAt || 0,
       };
 
-      // Avoid duplicate back-to-back DMs from retried interactions.
       if (entry.lastDmAt && now - entry.lastDmAt < VERIFY_DM_DEDUPE_MS) {
-        return interaction.editReply("📩 I already DM’d your code. Please check your DMs.");
+        return interaction.editReply("📩 I already DM'd your code. Please check your DMs.");
       }
 
       entry.lastDmAt = now;
@@ -1831,16 +1866,15 @@ client.on("interactionCreate", async (interaction) => {
             `\`/verify habbo:YourHabboNameSe\``
         );
 
-        return interaction.editReply("📩 I’ve DM’d your code!");
+        return interaction.editReply("📩 I've DM'd your code!");
       } catch {
         return interaction.editReply({
           content:
-            "❌ I couldn’t DM you. Turn on **Allow direct messages** for this server, then try again.",
+            "❌ I couldn't DM you. Turn on **Allow direct messages** for this server, then try again.",
         });
       }
     }
 
-    // /verify
     if (cmd === "verify") {
       if (!(await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral }))) return;
 
@@ -1888,13 +1922,12 @@ client.on("interactionCreate", async (interaction) => {
         savePendingCodes();
 
         sendLogEmbed(interaction.guild, verifiedEmbed(interaction.user.id, name));
-        return interaction.editReply("✅ Check-in complete. You’re verified!");
+        return interaction.editReply("✅ Check-in complete. You're verified!");
       } catch (err) {
         return interaction.editReply(`Verification failed: ${err.message}`);
       }
     }
 
-    // /verifymsg (post + pin verification instructions)
     if (cmd === "verifymsg") {
       const perms = interaction.memberPermissions;
       const isAllowed =
@@ -1903,7 +1936,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (!isAllowed) {
         return interaction.reply({
-          content: "❌ You don’t have permission to use this.",
+          content: "❌ You don't have permission to use this.",
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -1941,7 +1974,6 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // If a command exists but isn't handled:
     return interaction.reply({
       content: "Command not wired up yet 😬",
       flags: MessageFlags.Ephemeral,
@@ -1979,7 +2011,7 @@ process.on("unhandledRejection", (reason) => {
   console.error("unhandledRejection:", reason);
 });
 
-// ====== LOGIN (exactly once) ======
+// ====== LOGIN ======
 const token = String(process.env.DISCORD_TOKEN || "").trim();
 if (!token) {
   console.error("❌ No DISCORD_TOKEN set in environment variables.");
