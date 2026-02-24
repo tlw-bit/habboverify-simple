@@ -193,7 +193,9 @@ const TWL_POINTS_FILE = process.env.TWL_POINTS_FILE || path.join(__dirname, "twl
 const PENDING_CODES_FILE = process.env.PENDING_CODES_FILE || path.join(__dirname, "pending-codes.json");
 const VERIFY_CODE_TTL_MS = 15 * 60 * 1000;
 const VERIFY_DM_DEDUPE_MS = 12 * 1000;
-const ANNOUNCE_DEDUPE_WINDOW_MS = 20 * 1000;
+const ANNOUNCE_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
+const RECENT_LEVEL_ANNOUNCES_TTL_MS = 10 * 60 * 1000;
+const recentLevelAnnounces = new Map();
 
 function getWeekKeyUTC(date = new Date()) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -1227,6 +1229,13 @@ function cringeLevelUpLine(level, userMention) {
 async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
   const userMention = `<@${user.id}>`;
   const line = cringeLevelUpLine(newLevel, userMention);
+  const dedupeKey = `${user.id}:${newLevel}`;
+  const now = Date.now();
+
+  const recentTs = Number(recentLevelAnnounces.get(dedupeKey) || 0);
+  if (recentTs && now - recentTs <= RECENT_LEVEL_ANNOUNCES_TTL_MS) {
+    return;
+  }
 
   let targetChannel = fallbackChannel;
 
@@ -1240,8 +1249,7 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
   if (!targetChannel) return;
 
   try {
-    const recent = await targetChannel.messages.fetch({ limit: 8 });
-    const now = Date.now();
+    const recent = await targetChannel.messages.fetch({ limit: 25 });
     const duplicate = recent.find(
       (m) =>
         m.author?.id === client.user?.id &&
@@ -1252,6 +1260,13 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
   } catch {}
 
   await targetChannel.send({ content: line }).catch(() => {});
+
+  recentLevelAnnounces.set(dedupeKey, now);
+  for (const [key, ts] of recentLevelAnnounces.entries()) {
+    if (now - Number(ts || 0) > RECENT_LEVEL_ANNOUNCES_TTL_MS) {
+      recentLevelAnnounces.delete(key);
+    }
+  }
 }
 
 // FIX: Completely rewrote processLevelUps to fix announce/prestige bugs:
