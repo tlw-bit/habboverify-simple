@@ -197,6 +197,11 @@ const ANNOUNCE_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 const RECENT_LEVEL_ANNOUNCES_TTL_MS = 10 * 60 * 1000;
 const recentLevelAnnounces = new Map();
 
+// ====== FIX: in-process guard so concurrent XP events can't both announce the same level ======
+// This Set holds "<userId>-<level>" keys and is populated SYNCHRONOUSLY before any await,
+// meaning a second concurrent event sees the key immediately and bails out.
+const inFlightLevelAnnounces = new Set();
+
 function getWeekKeyUTC(date = new Date()) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   const day = d.getUTCDay();
@@ -271,7 +276,6 @@ function getTopTwlAllTime(limit = 10) {
 }
 
 function addTwlPoints(userId, amount) {
-  // FIX: roll weekly data before modifying, and always save after
   maybeRollWeeklyData();
   const n = Number(amount) || 0;
   if (n === 0) return;
@@ -282,7 +286,6 @@ function addTwlPoints(userId, amount) {
   if (twlPointsData.totals[userId] === 0) delete twlPointsData.totals[userId];
   if (twlPointsData.weeklyCounts[userId] === 0) delete twlPointsData.weeklyCounts[userId];
 
-  // FIX: was missing this save in original addTwlPoints
   saveTwlPointsData(twlPointsData);
 }
 
@@ -540,7 +543,6 @@ client.on("guildMemberAdd", async (member) => {
       inviterId = usedInvite.inviter.id;
       inviteCodeUsed = usedInvite.code;
 
-      // FIX: only roll weekly data, do NOT wipe anything here
       ensureWeeklyStores();
       invitesData.counts[inviterId] = (invitesData.counts[inviterId] || 0) + 1;
       invitesData.weeklyCounts[inviterId] = (invitesData.weeklyCounts[inviterId] || 0) + 1;
@@ -630,9 +632,6 @@ client.once("ready", async () => {
 
   await registerSlashCommands();
 
-  // FIX: only call ensureWeeklyStores on startup, NOT maybeRollWeeklyData
-  // maybeRollWeeklyData will wipe weekly counters if week changed; that's fine at
-  // scheduler time but on a fresh boot we want it called once in a controlled way.
   ensureWeeklyStores();
 
   for (const guild of client.guilds.cache.values()) {
@@ -702,7 +701,6 @@ function currentWeekKey() {
 }
 
 function ensureWeeklyStores() {
-  // Ensures all weekly sub-objects exist; does NOT roll/wipe anything.
   if (!xpData.weeklyXp || typeof xpData.weeklyXp !== "object") xpData.weeklyXp = {};
   if (!xpData.weeklyBonusXp || typeof xpData.weeklyBonusXp !== "object") xpData.weeklyBonusXp = {};
   if (!xpData.weeklyMeta || typeof xpData.weeklyMeta !== "object") {
@@ -729,9 +727,6 @@ function ensureWeeklyStores() {
 
 ensureWeeklyStores();
 
-// FIX: maybeRollWeeklyData now ONLY rolls data when the week key has actually changed.
-// It no longer wipes data on every call — only when a new week begins.
-// It does NOT save unless something changed, to avoid unnecessary disk writes.
 function maybeRollWeeklyData() {
   ensureWeeklyStores();
 
@@ -753,7 +748,6 @@ function maybeRollWeeklyData() {
     changed = true;
   }
 
-  // FIX: was missing twlPointsData weekly roll in original maybeRollWeeklyData
   if (twlPointsData.weeklyMeta.weekKey !== nowWeek) {
     console.log(`[Weekly] Rolling TWL weekly data: ${twlPointsData.weeklyMeta.weekKey} → ${nowWeek}`);
     twlPointsData.weeklyMeta.weekKey = nowWeek;
@@ -848,7 +842,6 @@ async function postWeeklyLeaderboards(guild) {
 
 function startWeeklyLeaderboardScheduler() {
   const checkAndRun = async () => {
-    // FIX: call maybeRollWeeklyData first so week keys are always fresh
     maybeRollWeeklyData();
 
     const now = new Date();
@@ -861,15 +854,12 @@ function startWeeklyLeaderboardScheduler() {
     const weekTag = `${currentWeekKey()}-posted`;
     ensureWeeklyStores();
 
-    // FIX: check lastPostedWeekTag BEFORE rolling so we don't post twice
     if (xpData.weeklyMeta.lastPostedWeekTag === weekTag) return;
 
-    // Post leaderboards BEFORE rolling weekly data so the post shows this week's data
     for (const guild of client.guilds.cache.values()) {
       await postWeeklyLeaderboards(guild).catch(() => {});
     }
 
-    // Now roll the weekly data for the new week
     xpData.weeklyMeta.weekKey = currentWeekKey();
     invitesData.weeklyMeta.weekKey = currentWeekKey();
     twlPointsData.weeklyMeta.weekKey = currentWeekKey();
@@ -878,7 +868,6 @@ function startWeeklyLeaderboardScheduler() {
     invitesData.weeklyCounts = {};
     twlPointsData.weeklyCounts = {};
 
-    // Mark as posted for this week so we don't double-post
     xpData.weeklyMeta.lastPostedWeekTag = weekTag;
 
     saveXpData(xpData);
@@ -898,7 +887,6 @@ function adjustWeeklyBonusXp(userId, delta) {
   xpData.weeklyBonusXp[userId] = Math.max(0, current + Number(delta || 0));
 }
 
-// FIX: adjustTwlPoints now saves to disk (original did not)
 function adjustTwlPoints(userId, delta) {
   maybeRollWeeklyData();
   const add = Number(delta || 0);
@@ -936,24 +924,17 @@ function ensureXpUser(userId) {
   return xpData.users[userId];
 }
 
-// FIX: shouldAnnounceLevel no longer mutates state itself.
-// State is only mutated AFTER the lock is acquired in withLevelAnnouncementLock,
-// preventing duplicate announces when multiple XP events fire simultaneously.
 function shouldAnnounceLevel(userObj, level) {
   const currentPrestige = Math.max(0, Number(userObj.prestige) || 0);
   const lastLevel = Number(userObj.lastAnnouncedLevel || 0);
   const lastPrestige = Math.max(0, Number(userObj.lastAnnouncedPrestige) || 0);
 
-  // Only announce each level once per prestige cycle.
-  // For a new prestige cycle (currentPrestige > lastPrestige), allow re-announcing from level 1.
   if (currentPrestige === lastPrestige && level <= lastLevel) {
     return false;
   }
   return true;
 }
 
-// FIX: markLevelAnnounced is now a separate function, called only after the lock
-// is acquired and the announcement actually fires.
 function markLevelAnnounced(userObj, level) {
   userObj.lastAnnouncedLevel = level;
   userObj.lastAnnouncedPrestige = Math.max(0, Number(userObj.prestige) || 0);
@@ -969,31 +950,45 @@ function ensureAnnounceLockDir() {
 async function withLevelAnnouncementLock(userId, level, fn) {
   ensureAnnounceLockDir();
 
+  // ====== FIX: in-process guard (synchronous, so no await gap before it takes effect) ======
+  // This prevents two concurrent async paths within the same process from both
+  // passing shouldAnnounceLevel before either has called markLevelAnnounced.
+  const inProcessKey = `${userId}-${level}`;
+  if (inFlightLevelAnnounces.has(inProcessKey)) {
+    return; // Another async path is already handling this announce
+  }
+  inFlightLevelAnnounces.add(inProcessKey); // Claim it synchronously NOW, before any await
+
   const lockPath = path.join(ANNOUNCE_LOCK_DIR, `${userId}-${level}.lock`);
   const staleMs = 30 * 1000;
 
   try {
-    const stat = fs.existsSync(lockPath) ? fs.statSync(lockPath) : null;
-    if (stat && Date.now() - stat.mtimeMs > staleMs) {
-      fs.unlinkSync(lockPath);
-    }
-  } catch {}
-
-  let handle;
-  try {
-    handle = fs.openSync(lockPath, "wx");
-  } catch {
-    // Lock file already exists — another process/event is handling this announce
-    return;
-  }
-
-  try {
-    await fn();
-  } finally {
     try {
-      if (typeof handle === "number") fs.closeSync(handle);
-      if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+      const stat = fs.existsSync(lockPath) ? fs.statSync(lockPath) : null;
+      if (stat && Date.now() - stat.mtimeMs > staleMs) {
+        fs.unlinkSync(lockPath);
+      }
     } catch {}
+
+    let handle;
+    try {
+      handle = fs.openSync(lockPath, "wx");
+    } catch {
+      // File lock already held by another process
+      return;
+    }
+
+    try {
+      await fn();
+    } finally {
+      try {
+        if (typeof handle === "number") fs.closeSync(handle);
+        if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+      } catch {}
+    }
+  } finally {
+    // Always release the in-process guard
+    inFlightLevelAnnounces.delete(inProcessKey);
   }
 }
 
@@ -1237,6 +1232,18 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
     return;
   }
 
+  // ====== FIX: stamp recentLevelAnnounces BEFORE any await ======
+  // Previously this was stamped AFTER the channel.messages.fetch await,
+  // meaning two concurrent calls both passed the check above before either stamped it.
+  recentLevelAnnounces.set(dedupeKey, now);
+
+  // Clean up stale entries while we have the map open
+  for (const [key, ts] of recentLevelAnnounces.entries()) {
+    if (now - Number(ts || 0) > RECENT_LEVEL_ANNOUNCES_TTL_MS) {
+      recentLevelAnnounces.delete(key);
+    }
+  }
+
   let targetChannel = fallbackChannel;
 
   if (LEVEL_UP_CHANNEL_ID) {
@@ -1248,6 +1255,7 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
 
   if (!targetChannel) return;
 
+  // Still do a channel history check as a final safety net against restarts/multi-process
   try {
     const recent = await targetChannel.messages.fetch({ limit: 25 });
     const duplicate = recent.find(
@@ -1259,45 +1267,10 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
     if (duplicate) return;
   } catch {}
 
-  const sentMsg = await targetChannel.send({ content: line }).catch(() => null);
-
-  // Safety net: if two events/processes race and both send the same line,
-  // keep only one recent copy so channels don't get spammed with duplicates.
-  if (sentMsg) {
-    try {
-      const recent = await targetChannel.messages.fetch({ limit: 25 });
-      const duplicates = recent
-        .filter(
-          (m) =>
-            m.author?.id === client.user?.id &&
-            m.content === line &&
-            now - m.createdTimestamp <= ANNOUNCE_DEDUPE_WINDOW_MS
-        )
-        .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-
-      for (let i = 1; i < duplicates.length; i += 1) {
-        await duplicates[i].delete().catch(() => {});
-      }
-    } catch {}
-  }
-
-  recentLevelAnnounces.set(dedupeKey, now);
-  for (const [key, ts] of recentLevelAnnounces.entries()) {
-    if (now - Number(ts || 0) > RECENT_LEVEL_ANNOUNCES_TTL_MS) {
-      recentLevelAnnounces.delete(key);
-    }
-  }
+  await targetChannel.send({ content: line }).catch(() => null);
 }
 
-// FIX: Completely rewrote processLevelUps to fix announce/prestige bugs:
-//  1. shouldAnnounceLevel is checked BEFORE firing the lock (not inside it), so
-//     the state read is consistent with what will be written.
-//  2. markLevelAnnounced is called INSIDE the lock after the announcement, so
-//     concurrent events see the updated state.
-//  3. Prestige announce now uses a separate prestige-specific lock key so it
-//     can't clash with the level-50 milestone lock.
-//  4. After prestige we reset lastAnnouncedLevel/lastAnnouncedPrestige BEFORE
-//     the next level-up loop iteration so the level 1 announce guard works correctly.
+// ====== processLevelUps ======
 async function processLevelUps({ guild, channel, userObj, userDiscord, member }) {
   while (userObj.xp >= xpNeeded(userObj.level)) {
     userObj.xp -= xpNeeded(userObj.level);
@@ -1322,7 +1295,7 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
       userObj.level = PRESTIGE_RESET_LEVEL;
       userObj.xp = PRESTIGE_RESET_XP;
 
-      // FIX: reset announce tracking so levels 1-49 can fire again in this new prestige cycle
+      // Reset announce tracking so levels 1-49 can fire again in this new prestige cycle
       userObj.lastAnnouncedLevel = 0;
       userObj.lastAnnouncedPrestige = newPrestige;
       userObj.lastAnnouncedLevelAt = 0;
@@ -1357,7 +1330,7 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
     if (shouldAnnounceLevel(userObj, userObj.level)) {
       const levelSnapshot = userObj.level;
       await withLevelAnnouncementLock(userDiscord.id, levelSnapshot, async () => {
-        // Re-check inside the lock in case another concurrent event already announced
+        // Re-check inside the lock (guards against multi-process races via file lock)
         if (!shouldAnnounceLevel(userObj, levelSnapshot)) return;
         markLevelAnnounced(userObj, levelSnapshot);
         saveXpData(xpData);
@@ -1370,7 +1343,6 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
 }
 
 async function awardXpAndProcess({ guild, channel, userId, userDiscord, amount }) {
-  // FIX: only check weekly roll here, don't redundantly save mid-flow
   maybeRollWeeklyData();
 
   const userObj = ensureXpUser(userId);
