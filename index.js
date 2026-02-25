@@ -1259,7 +1259,27 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
     if (duplicate) return;
   } catch {}
 
-  await targetChannel.send({ content: line }).catch(() => {});
+  const sentMsg = await targetChannel.send({ content: line }).catch(() => null);
+
+  // Safety net: if two events/processes race and both send the same line,
+  // keep only one recent copy so channels don't get spammed with duplicates.
+  if (sentMsg) {
+    try {
+      const recent = await targetChannel.messages.fetch({ limit: 25 });
+      const duplicates = recent
+        .filter(
+          (m) =>
+            m.author?.id === client.user?.id &&
+            m.content === line &&
+            now - m.createdTimestamp <= ANNOUNCE_DEDUPE_WINDOW_MS
+        )
+        .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+      for (let i = 1; i < duplicates.length; i += 1) {
+        await duplicates[i].delete().catch(() => {});
+      }
+    } catch {}
+  }
 
   recentLevelAnnounces.set(dedupeKey, now);
   for (const [key, ts] of recentLevelAnnounces.entries()) {
