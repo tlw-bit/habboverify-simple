@@ -927,13 +927,34 @@ function ensureXpUser(userId) {
     }
 
     if (!Array.isArray(user.announcedLevels)) user.announcedLevels = [];
+    user.announcedLevels = Array.from(
+      new Set(
+        user.announcedLevels
+          .map((l) => Number(l))
+          .filter((l) => Number.isInteger(l) && l > 0)
+      )
+    ).sort((a, b) => a - b);
     user.lastAnnouncedPrestige = Math.max(0, Number(user.lastAnnouncedPrestige) || 0);
   }
   return xpData.users[userId];
 }
 
+function getNormalizedAnnouncedLevels(userObj) {
+  const normalized = Array.from(
+    new Set(
+      (Array.isArray(userObj.announcedLevels) ? userObj.announcedLevels : [])
+        .map((l) => Number(l))
+        .filter((l) => Number.isInteger(l) && l > 0)
+    )
+  ).sort((a, b) => a - b);
+
+  userObj.announcedLevels = normalized;
+  return normalized;
+}
+
 // Returns true if this level has NOT been announced yet in the current prestige cycle.
 function shouldAnnounceLevel(userObj, level) {
+  const levelNum = Math.max(1, Number(level) || 1);
   const currentPrestige = Math.max(0, Number(userObj.prestige) || 0);
 
   // If prestige changed since we last tracked, wipe the announced list for the new cycle.
@@ -942,12 +963,13 @@ function shouldAnnounceLevel(userObj, level) {
     userObj.lastAnnouncedPrestige = currentPrestige;
   }
 
-  const announced = new Set(userObj.announcedLevels || []);
-  return !announced.has(level);
+  const announced = new Set(getNormalizedAnnouncedLevels(userObj));
+  return !announced.has(levelNum);
 }
 
 // Mark a level as announced for the current prestige cycle.
 function markLevelAnnounced(userObj, level) {
+  const levelNum = Math.max(1, Number(level) || 1);
   const currentPrestige = Math.max(0, Number(userObj.prestige) || 0);
 
   // Wipe if prestige changed
@@ -956,9 +978,9 @@ function markLevelAnnounced(userObj, level) {
     userObj.lastAnnouncedPrestige = currentPrestige;
   }
 
-  const announced = new Set(userObj.announcedLevels || []);
-  announced.add(level);
-  userObj.announcedLevels = Array.from(announced);
+  const announced = new Set(getNormalizedAnnouncedLevels(userObj));
+  announced.add(levelNum);
+  userObj.announcedLevels = Array.from(announced).sort((a, b) => a - b);
   userObj.lastAnnouncedPrestige = currentPrestige;
 }
 
