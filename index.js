@@ -32,7 +32,6 @@ const WELCOME_CHANNEL_ID = "1456962809425559613";
 // ====== XP / LEVELING CONFIG ======
 const XP_FILE = process.env.XP_FILE || path.join(__dirname, "xp.json");
 const XP_FILE_BAK = `${XP_FILE}.bak`;
-const ANNOUNCE_LOCK_DIR = path.join(__dirname, ".announce-locks");
 
 const XP_ALLOWED_CHANNEL_IDS = [];
 const XP_BLOCKED_CHANNEL_IDS = ["1462386529765691473"];
@@ -193,14 +192,12 @@ const TWL_POINTS_FILE = process.env.TWL_POINTS_FILE || path.join(__dirname, "twl
 const PENDING_CODES_FILE = process.env.PENDING_CODES_FILE || path.join(__dirname, "pending-codes.json");
 const VERIFY_CODE_TTL_MS = 15 * 60 * 1000;
 const VERIFY_DM_DEDUPE_MS = 12 * 1000;
-const ANNOUNCE_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
-const RECENT_LEVEL_ANNOUNCES_TTL_MS = 10 * 60 * 1000;
-const recentLevelAnnounces = new Map();
 
-// ====== FIX: in-process guard so concurrent XP events can't both announce the same level ======
-// This Set holds "<userId>-<level>" keys and is populated SYNCHRONOUSLY before any await,
-// meaning a second concurrent event sees the key immediately and bails out.
-const inFlightLevelAnnounces = new Set();
+// ====== LEVEL-UP DEDUPLICATION ======
+// Single source of truth: a Set keyed by "<userId>-<prestige>-<level>"
+// Populated synchronously before any await, cleared after announcement is sent.
+// This replaces the old triple-layer (in-process Set + file lock + recentLevelAnnounces Map).
+const pendingLevelAnnounces = new Set();
 
 function getWeekKeyUTC(date = new Date()) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -904,95 +901,68 @@ function ensureXpUser(userId) {
       prestige: 0,
       lastXpAt: 0,
       lastReactionXpAt: 0,
-      lastAnnouncedLevel: 0,
+      // announcedLevels: Set of level numbers already announced in the current prestige cycle.
+      // Stored as an array in JSON, converted back to a Set at runtime.
+      announcedLevels: [],
       lastAnnouncedPrestige: 0,
-      lastAnnouncedLevelAt: 0,
     };
   } else {
     const user = xpData.users[userId];
-
     user.xp = Math.max(0, Number(user.xp) || 0);
     user.level = Math.max(1, Number(user.level) || 1);
     user.lastXpAt = Math.max(0, Number(user.lastXpAt) || 0);
     user.bonusXp = Math.max(0, Number(user.bonusXp) || 0);
     user.prestige = Math.max(0, Number(user.prestige) || 0);
     user.lastReactionXpAt = Math.max(0, Number(user.lastReactionXpAt) || 0);
-    user.lastAnnouncedLevel = Math.max(0, Number(user.lastAnnouncedLevel) || 0);
+
+    // Migrate old fields to the new announcedLevels array if needed
+    if (!Array.isArray(user.announcedLevels)) {
+      // If they had old lastAnnouncedLevel, seed the array up to that level
+      const oldMax = Math.max(0, Number(user.lastAnnouncedLevel) || 0);
+      user.announcedLevels = [];
+      for (let l = 1; l <= oldMax; l++) user.announcedLevels.push(l);
+      // Clean up old fields
+      delete user.lastAnnouncedLevel;
+      delete user.lastAnnouncedLevelAt;
+    }
+
+    if (!Array.isArray(user.announcedLevels)) user.announcedLevels = [];
     user.lastAnnouncedPrestige = Math.max(0, Number(user.lastAnnouncedPrestige) || 0);
-    user.lastAnnouncedLevelAt = Math.max(0, Number(user.lastAnnouncedLevelAt) || 0);
   }
   return xpData.users[userId];
 }
 
+// Returns true if this level has NOT been announced yet in the current prestige cycle.
 function shouldAnnounceLevel(userObj, level) {
   const currentPrestige = Math.max(0, Number(userObj.prestige) || 0);
-  const lastLevel = Number(userObj.lastAnnouncedLevel || 0);
-  const lastPrestige = Math.max(0, Number(userObj.lastAnnouncedPrestige) || 0);
 
-  if (currentPrestige === lastPrestige && level <= lastLevel) {
-    return false;
+  // If prestige changed since we last tracked, wipe the announced list for the new cycle.
+  if (currentPrestige !== (Number(userObj.lastAnnouncedPrestige) || 0)) {
+    userObj.announcedLevels = [];
+    userObj.lastAnnouncedPrestige = currentPrestige;
   }
-  return true;
+
+  const announced = new Set(userObj.announcedLevels || []);
+  return !announced.has(level);
 }
 
+// Mark a level as announced for the current prestige cycle.
 function markLevelAnnounced(userObj, level) {
-  userObj.lastAnnouncedLevel = level;
-  userObj.lastAnnouncedPrestige = Math.max(0, Number(userObj.prestige) || 0);
-  userObj.lastAnnouncedLevelAt = Date.now();
+  const currentPrestige = Math.max(0, Number(userObj.prestige) || 0);
+
+  // Wipe if prestige changed
+  if (currentPrestige !== (Number(userObj.lastAnnouncedPrestige) || 0)) {
+    userObj.announcedLevels = [];
+    userObj.lastAnnouncedPrestige = currentPrestige;
+  }
+
+  const announced = new Set(userObj.announcedLevels || []);
+  announced.add(level);
+  userObj.announcedLevels = Array.from(announced);
+  userObj.lastAnnouncedPrestige = currentPrestige;
 }
 
-function ensureAnnounceLockDir() {
-  if (!fs.existsSync(ANNOUNCE_LOCK_DIR)) {
-    fs.mkdirSync(ANNOUNCE_LOCK_DIR, { recursive: true });
-  }
-}
-
-async function withLevelAnnouncementLock(userId, level, fn) {
-  ensureAnnounceLockDir();
-
-  // ====== FIX: in-process guard (synchronous, so no await gap before it takes effect) ======
-  // This prevents two concurrent async paths within the same process from both
-  // passing shouldAnnounceLevel before either has called markLevelAnnounced.
-  const inProcessKey = `${userId}-${level}`;
-  if (inFlightLevelAnnounces.has(inProcessKey)) {
-    return; // Another async path is already handling this announce
-  }
-  inFlightLevelAnnounces.add(inProcessKey); // Claim it synchronously NOW, before any await
-
-  const lockPath = path.join(ANNOUNCE_LOCK_DIR, `${userId}-${level}.lock`);
-  const staleMs = 30 * 1000;
-
-  try {
-    try {
-      const stat = fs.existsSync(lockPath) ? fs.statSync(lockPath) : null;
-      if (stat && Date.now() - stat.mtimeMs > staleMs) {
-        fs.unlinkSync(lockPath);
-      }
-    } catch {}
-
-    let handle;
-    try {
-      handle = fs.openSync(lockPath, "wx");
-    } catch {
-      // File lock already held by another process
-      return;
-    }
-
-    try {
-      await fn();
-    } finally {
-      try {
-        if (typeof handle === "number") fs.closeSync(handle);
-        if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
-      } catch {}
-    }
-  } finally {
-    // Always release the in-process guard
-    inFlightLevelAnnounces.delete(inProcessKey);
-  }
-}
-
-// XP curve
+// XP curve: XP required to go from level N to level N+1
 function xpNeeded(level) {
   return 70 + (level - 1) * 35;
 }
@@ -1222,30 +1192,9 @@ function cringeLevelUpLine(level, userMention) {
 }
 
 async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
-  const userMention = `<@${user.id}>`;
-  const line = cringeLevelUpLine(newLevel, userMention);
-  const dedupeKey = `${user.id}:${newLevel}`;
-  const now = Date.now();
-
-  const recentTs = Number(recentLevelAnnounces.get(dedupeKey) || 0);
-  if (recentTs && now - recentTs <= RECENT_LEVEL_ANNOUNCES_TTL_MS) {
-    return;
-  }
-
-  // ====== FIX: stamp recentLevelAnnounces BEFORE any await ======
-  // Previously this was stamped AFTER the channel.messages.fetch await,
-  // meaning two concurrent calls both passed the check above before either stamped it.
-  recentLevelAnnounces.set(dedupeKey, now);
-
-  // Clean up stale entries while we have the map open
-  for (const [key, ts] of recentLevelAnnounces.entries()) {
-    if (now - Number(ts || 0) > RECENT_LEVEL_ANNOUNCES_TTL_MS) {
-      recentLevelAnnounces.delete(key);
-    }
-  }
+  const line = cringeLevelUpLine(newLevel, `<@${user.id}>`);
 
   let targetChannel = fallbackChannel;
-
   if (LEVEL_UP_CHANNEL_ID) {
     const ch =
       guild.channels.cache.get(LEVEL_UP_CHANNEL_ID) ||
@@ -1254,66 +1203,65 @@ async function announceLevelUp(guild, fallbackChannel, user, newLevel) {
   }
 
   if (!targetChannel) return;
-
-  // Still do a channel history check as a final safety net against restarts/multi-process
-  try {
-    const recent = await targetChannel.messages.fetch({ limit: 25 });
-    const duplicate = recent.find(
-      (m) =>
-        m.author?.id === client.user?.id &&
-        m.content === line &&
-        now - m.createdTimestamp <= ANNOUNCE_DEDUPE_WINDOW_MS
-    );
-    if (duplicate) return;
-  } catch {}
-
-  await targetChannel.send({ content: line }).catch(() => null);
+  await targetChannel.send({ content: line }).catch(() => {});
 }
 
 // ====== processLevelUps ======
+// FIXED: The announce deduplication is now done via a simple in-memory Set keyed by
+// "<userId>-<prestige>-<level>". We claim the key BEFORE any await (synchronous),
+// send the message, then save the persistent announcedLevels array.
+// This prevents:
+//   (a) the same level firing twice from two rapid messages in the same process
+//   (b) the level being re-announced on bot restart (announcedLevels is persisted)
+//   (c) XP deduction happening at the wrong level (xpNeeded is now called BEFORE incrementing level)
 async function processLevelUps({ guild, channel, userObj, userDiscord, member }) {
+  // Process one level-up at a time so the XP curve is always correct:
+  // deduct the cost for the CURRENT level, THEN increment.
   while (userObj.xp >= xpNeeded(userObj.level)) {
-    userObj.xp -= xpNeeded(userObj.level);
-    userObj.level += 1;
+    const levelBeforeIncrement = userObj.level;
+    userObj.xp -= xpNeeded(levelBeforeIncrement); // deduct cost of THIS level
+    userObj.level = levelBeforeIncrement + 1;      // then increment
 
-    // PRESTIGE check
-    if (userObj.level >= PRESTIGE_AT_LEVEL) {
-      const newPrestige = Number(userObj.prestige || 0) + 1;
+    const newLevel = userObj.level;
+    const currentPrestige = Number(userObj.prestige) || 0;
 
-      // Announce the level 50 milestone first (before resetting state)
+    // ---- PRESTIGE check ----
+    if (newLevel >= PRESTIGE_AT_LEVEL) {
+      // Announce level 50 milestone
       if (shouldAnnounceLevel(userObj, PRESTIGE_AT_LEVEL)) {
-        const lvl50LockKey = `${userDiscord.id}-prestige-${newPrestige}-50`;
-        await withLevelAnnouncementLock(userDiscord.id, lvl50LockKey, async () => {
+        const announceKey = `${userDiscord.id}-${currentPrestige}-${PRESTIGE_AT_LEVEL}`;
+        if (!pendingLevelAnnounces.has(announceKey)) {
+          pendingLevelAnnounces.add(announceKey); // claim synchronously
           markLevelAnnounced(userObj, PRESTIGE_AT_LEVEL);
           saveXpData(xpData);
           await announceLevelUp(guild, channel, userDiscord, PRESTIGE_AT_LEVEL).catch(() => {});
-        });
+          pendingLevelAnnounces.delete(announceKey);
+        }
       }
 
       // Apply prestige reset
+      const newPrestige = currentPrestige + 1;
       userObj.prestige = newPrestige;
       userObj.level = PRESTIGE_RESET_LEVEL;
       userObj.xp = PRESTIGE_RESET_XP;
 
-      // Reset announce tracking so levels 1-49 can fire again in this new prestige cycle
-      userObj.lastAnnouncedLevel = 0;
+      // Reset the announced-levels tracking for the new prestige cycle
+      userObj.announcedLevels = [];
       userObj.lastAnnouncedPrestige = newPrestige;
-      userObj.lastAnnouncedLevelAt = 0;
 
-      // Announce prestige message
-      const userMention = `<@${userDiscord.id}>`;
+      // Announce prestige
       const prestigeMsg =
-        `🏨✨ ${userMention} hit **Level ${PRESTIGE_AT_LEVEL}** and unlocked ` +
+        `🏨✨ <@${userDiscord.id}> hit **Level ${PRESTIGE_AT_LEVEL}** and unlocked ` +
         `**PRESTIGE ${newPrestige}**! Back to Level ${PRESTIGE_RESET_LEVEL} we go.`;
 
-      let targetChannel = channel;
+      let presChannel = channel;
       if (LEVEL_UP_CHANNEL_ID) {
         const ch =
           guild.channels.cache.get(LEVEL_UP_CHANNEL_ID) ||
           (await guild.channels.fetch(LEVEL_UP_CHANNEL_ID).catch(() => null));
-        if (ch && ch.isTextBased()) targetChannel = ch;
+        if (ch && ch.isTextBased()) presChannel = ch;
       }
-      if (targetChannel) await targetChannel.send({ content: prestigeMsg }).catch(() => {});
+      if (presChannel) await presChannel.send({ content: prestigeMsg }).catch(() => {});
 
       // Remove all level roles (back to level 1)
       if (member) {
@@ -1323,19 +1271,20 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
       }
 
       saveXpData(xpData);
-      break;
+      break; // Stop processing — level is reset; next message will re-enter this loop cleanly
     }
 
-    // Normal level-up announce
-    if (shouldAnnounceLevel(userObj, userObj.level)) {
-      const levelSnapshot = userObj.level;
-      await withLevelAnnouncementLock(userDiscord.id, levelSnapshot, async () => {
-        // Re-check inside the lock (guards against multi-process races via file lock)
-        if (!shouldAnnounceLevel(userObj, levelSnapshot)) return;
-        markLevelAnnounced(userObj, levelSnapshot);
+    // ---- Normal level-up announce ----
+    if (shouldAnnounceLevel(userObj, newLevel)) {
+      const announceKey = `${userDiscord.id}-${currentPrestige}-${newLevel}`;
+
+      if (!pendingLevelAnnounces.has(announceKey)) {
+        pendingLevelAnnounces.add(announceKey); // claim synchronously before any await
+        markLevelAnnounced(userObj, newLevel);
         saveXpData(xpData);
-        await announceLevelUp(guild, channel, userDiscord, levelSnapshot).catch(() => {});
-      });
+        await announceLevelUp(guild, channel, userDiscord, newLevel).catch(() => {});
+        pendingLevelAnnounces.delete(announceKey);
+      }
     }
 
     if (member) await applyLevelRoles(member, userObj.level).catch(() => {});
@@ -1625,13 +1574,12 @@ client.on("interactionCreate", async (interaction) => {
         targetObj.level = 1;
         targetObj.prestige = 0;
         targetObj.bonusXp = 0;
+        targetObj.announcedLevels = [];
+        targetObj.lastAnnouncedPrestige = 0;
         adjustWeeklyBonusXp(targetUser.id, -prevBonusXp);
         adjustTwlPoints(targetUser.id, -prevBonusXp);
         targetObj.lastXpAt = 0;
         targetObj.lastReactionXpAt = 0;
-        targetObj.lastAnnouncedLevel = 0;
-        targetObj.lastAnnouncedPrestige = 0;
-        targetObj.lastAnnouncedLevelAt = 0;
       }
 
       saveXpData(xpData);
