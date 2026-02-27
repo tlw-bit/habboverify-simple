@@ -15,6 +15,44 @@ const path = require("path");
 const fs = require("fs");
 const { createCanvas, loadImage } = require("canvas");
 
+const DEFAULT_DATA_DIR = fs.existsSync("/data") ? "/data" : path.join(__dirname, "data");
+const DATA_DIR = process.env.DATA_DIR || DEFAULT_DATA_DIR;
+
+function ensureDirSync(dirPath) {
+  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function resolveDataFilePath(envVarName, defaultFileName, legacyPath) {
+  const fromEnv = String(process.env[envVarName] || "").trim();
+  if (fromEnv) {
+    ensureDirSync(path.dirname(fromEnv));
+    return fromEnv;
+  }
+
+  ensureDirSync(DATA_DIR);
+  const preferredPath = path.join(DATA_DIR, defaultFileName);
+
+  if (!fs.existsSync(preferredPath) && legacyPath && fs.existsSync(legacyPath)) {
+    try {
+      fs.copyFileSync(legacyPath, preferredPath);
+      console.log(`[Storage] Migrated ${path.basename(legacyPath)} → ${preferredPath}`);
+    } catch (err) {
+      console.warn(`[Storage] Failed migrating ${path.basename(legacyPath)}:`, err?.message || err);
+    }
+  }
+
+  return preferredPath;
+}
+
+function writeJsonFileAtomic(filePath, obj) {
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const tmp = path.join(dir, `${base}.tmp`);
+  ensureDirSync(dir);
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), "utf8");
+  fs.renameSync(tmp, filePath);
+}
+
 // ---- fetch support (Node 18+ has global fetch; fallback just in case) ----
 const fetchFn =
   global.fetch || ((...args) => import("undici").then((m) => m.fetch(...args)));
@@ -30,7 +68,7 @@ const LOG_CHANNEL_ID = "1456955298597175391";
 const WELCOME_CHANNEL_ID = "1456962809425559613";
 
 // ====== XP / LEVELING CONFIG ======
-const XP_FILE = process.env.XP_FILE || path.join(__dirname, "xp.json");
+const XP_FILE = resolveDataFilePath("XP_FILE", "xp.json", path.join(__dirname, "xp.json"));
 const XP_FILE_BAK = `${XP_FILE}.bak`;
 
 const XP_ALLOWED_CHANNEL_IDS = [];
@@ -187,9 +225,17 @@ const ROLE_ACCENTS = {
 const DEFAULT_ACCENT = "#5865f2";
 
 // ====== INVITE TRACKING STORAGE ======
-const INVITES_FILE = path.join(__dirname, "invites.json");
-const TWL_POINTS_FILE = process.env.TWL_POINTS_FILE || path.join(__dirname, "twl-points.json");
-const PENDING_CODES_FILE = process.env.PENDING_CODES_FILE || path.join(__dirname, "pending-codes.json");
+const INVITES_FILE = resolveDataFilePath("INVITES_FILE", "invites.json", path.join(__dirname, "invites.json"));
+const TWL_POINTS_FILE = resolveDataFilePath(
+  "TWL_POINTS_FILE",
+  "twl-points.json",
+  path.join(__dirname, "twl-points.json")
+);
+const PENDING_CODES_FILE = resolveDataFilePath(
+  "PENDING_CODES_FILE",
+  "pending-codes.json",
+  path.join(__dirname, "pending-codes.json")
+);
 const VERIFY_CODE_TTL_MS = 15 * 60 * 1000;
 const VERIFY_DM_DEDUPE_MS = 12 * 1000;
 
@@ -226,7 +272,7 @@ function loadInvitesDataSafe() {
 }
 
 function saveInvitesData(obj) {
-  fs.writeFileSync(INVITES_FILE, JSON.stringify(obj, null, 2), "utf8");
+  writeJsonFileAtomic(INVITES_FILE, obj);
 }
 
 let invitesData = loadInvitesDataSafe();
@@ -251,7 +297,7 @@ function loadTwlPointsSafe() {
 }
 
 function saveTwlPointsData(obj) {
-  fs.writeFileSync(TWL_POINTS_FILE, JSON.stringify(obj, null, 2), "utf8");
+  writeJsonFileAtomic(TWL_POINTS_FILE, obj);
 }
 
 let twlPointsData = loadTwlPointsSafe();
@@ -316,7 +362,7 @@ function loadPendingCodesSafe() {
 
 function savePendingCodes() {
   const asObj = Object.fromEntries(pending.entries());
-  fs.writeFileSync(PENDING_CODES_FILE, JSON.stringify(asObj, null, 2), "utf8");
+  writeJsonFileAtomic(PENDING_CODES_FILE, asObj);
 }
 
 const pending = new Map(Object.entries(loadPendingCodesSafe()));
