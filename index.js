@@ -25,8 +25,11 @@ function ensureDirSync(dirPath) {
 function resolveDataFilePath(envVarName, defaultFileName, legacyPath) {
   const fromEnv = String(process.env[envVarName] || "").trim();
   if (fromEnv) {
-    ensureDirSync(path.dirname(fromEnv));
-    return fromEnv;
+    const resolvedEnvPath = path.isAbsolute(fromEnv)
+      ? fromEnv
+      : path.resolve(__dirname, fromEnv);
+    ensureDirSync(path.dirname(resolvedEnvPath));
+    return resolvedEnvPath;
   }
 
   ensureDirSync(DATA_DIR);
@@ -49,8 +52,16 @@ function writeJsonFileAtomic(filePath, obj) {
   const base = path.basename(filePath);
   const tmp = path.join(dir, `${base}.tmp`);
   ensureDirSync(dir);
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), "utf8");
-  fs.renameSync(tmp, filePath);
+  const json = JSON.stringify(obj, null, 2);
+  fs.writeFileSync(tmp, json, "utf8");
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    } catch {}
+    fs.writeFileSync(filePath, json, "utf8");
+  }
 }
 
 // ---- fetch support (Node 18+ has global fetch; fallback just in case) ----
@@ -81,9 +92,13 @@ const REACTION_XP_MIN = 8;
 const REACTION_XP_MAX = 15;
 const REACTION_XP_COOLDOWN_SECONDS = 45;
 
-const PRESTIGE_AT_LEVEL = 50;
+const PRESTIGE_AT_LEVEL = Math.max(0, Number(process.env.PRESTIGE_AT_LEVEL || 0));
 const PRESTIGE_RESET_LEVEL = 1;
 const PRESTIGE_RESET_XP = 0;
+
+function isPrestigeEnabled() {
+  return PRESTIGE_AT_LEVEL >= 2;
+}
 
 const BOT_CHAT_CHANNEL_ID =
   process.env.BOT_CHAT_CHANNEL_ID || "1456952227909603408";
@@ -238,6 +253,12 @@ const PENDING_CODES_FILE = resolveDataFilePath(
 );
 const VERIFY_CODE_TTL_MS = 15 * 60 * 1000;
 const VERIFY_DM_DEDUPE_MS = 12 * 1000;
+
+console.log("[Storage] DATA_DIR:", DATA_DIR);
+console.log("[Storage] XP_FILE:", XP_FILE);
+console.log("[Storage] INVITES_FILE:", INVITES_FILE);
+console.log("[Storage] TWL_POINTS_FILE:", TWL_POINTS_FILE);
+console.log("[Storage] PENDING_CODES_FILE:", PENDING_CODES_FILE);
 
 // ====== LEVEL-UP DEDUPLICATION ======
 // Single source of truth: a Set keyed by "<userId>-<prestige>-<level>"
@@ -727,14 +748,8 @@ function loadXpDataSafe() {
 }
 
 function saveXpData(obj) {
-  const json = JSON.stringify(obj, null, 2);
-  const dir = path.dirname(XP_FILE);
-  const base = path.basename(XP_FILE);
-  const tmp = path.join(dir, `${base}.tmp`);
-
-  fs.writeFileSync(tmp, json, "utf8");
-  fs.renameSync(tmp, XP_FILE);
-  fs.writeFileSync(XP_FILE_BAK, json, "utf8");
+  writeJsonFileAtomic(XP_FILE, obj);
+  writeJsonFileAtomic(XP_FILE_BAK, obj);
 }
 
 let xpData = loadXpDataSafe();
@@ -936,6 +951,56 @@ function adjustTwlPoints(userId, delta) {
   twlPointsData.totals[userId] = Math.max(0, Number(twlPointsData.totals[userId] || 0) + add);
   twlPointsData.weeklyCounts[userId] = Math.max(0, Number(twlPointsData.weeklyCounts[userId] || 0) + add);
   saveTwlPointsData(twlPointsData);
+}
+
+function applyServerXpDelta(userObj, delta) {
+  let remaining = Number(delta || 0);
+  if (!Number.isFinite(remaining) || remaining === 0) return;
+
+  userObj.xp = Math.max(0, Number(userObj.xp) || 0);
+  userObj.level = Math.max(1, Number(userObj.level) || 1);
+  userObj.prestige = Math.max(0, Number(userObj.prestige) || 0);
+
+  if (remaining > 0) {
+    userObj.xp += remaining;
+
+    while (userObj.xp >= xpNeeded(userObj.level)) {
+      const cost = xpNeeded(userObj.level);
+      userObj.xp -= cost;
+      userObj.level += 1;
+
+      if (isPrestigeEnabled() && userObj.level >= PRESTIGE_AT_LEVEL) {
+        userObj.prestige += 1;
+        userObj.level = PRESTIGE_RESET_LEVEL;
+        userObj.xp = PRESTIGE_RESET_XP;
+        userObj.announcedLevels = [];
+        userObj.lastAnnouncedPrestige = userObj.prestige;
+        break;
+      }
+    }
+
+    return;
+  }
+
+  let toRemove = Math.abs(remaining);
+  while (toRemove > 0) {
+    if (userObj.xp >= toRemove) {
+      userObj.xp -= toRemove;
+      toRemove = 0;
+      break;
+    }
+
+    toRemove -= userObj.xp;
+
+    if (userObj.level > 1) {
+      userObj.level -= 1;
+      userObj.xp = xpNeeded(userObj.level);
+      continue;
+    }
+
+    userObj.xp = 0;
+    toRemove = 0;
+  }
 }
 
 function ensureXpUser(userId) {
@@ -1294,7 +1359,7 @@ async function processLevelUps({ guild, channel, userObj, userDiscord, member })
     const currentPrestige = Number(userObj.prestige) || 0;
 
     // ---- PRESTIGE check ----
-    if (newLevel >= PRESTIGE_AT_LEVEL) {
+    if (isPrestigeEnabled() && newLevel >= PRESTIGE_AT_LEVEL) {
       // Announce level 50 milestone
       if (shouldAnnounceLevel(userObj, PRESTIGE_AT_LEVEL)) {
         const announceKey = `${userDiscord.id}-${currentPrestige}-${PRESTIGE_AT_LEVEL}`;
@@ -1584,7 +1649,9 @@ client.on("interactionCreate", async (interaction) => {
             `✅ **XP allowed in:** ${allowed}\n` +
             `🚫 **XP blocked in:** ${blocked}\n\n` +
             `📊 **XP needed per level:** \`70 + (level - 1) * 35\`\n` +
-            `⭐ **Prestige:** at **Level ${PRESTIGE_AT_LEVEL}** (resets to Level ${PRESTIGE_RESET_LEVEL})`
+            (isPrestigeEnabled()
+              ? `⭐ **Prestige:** at **Level ${PRESTIGE_AT_LEVEL}** (resets to Level ${PRESTIGE_RESET_LEVEL})`
+              : `⭐ **Prestige:** disabled (no level reset cap)`)
         )
         .setTimestamp();
 
@@ -1609,32 +1676,41 @@ client.on("interactionCreate", async (interaction) => {
       const amount = interaction.options.getInteger("amount") ?? 0;
 
       const targetObj = ensureXpUser(targetUser.id);
-      const prevBonusXp = Number(targetObj.bonusXp || 0);
+      maybeRollWeeklyData();
 
       if (action === "give") {
         if (amount <= 0)
           return interaction.reply({ content: "Amount must be > 0.", flags: MessageFlags.Ephemeral });
-        targetObj.bonusXp += amount;
-        adjustWeeklyBonusXp(targetUser.id, amount);
-        adjustTwlPoints(targetUser.id, amount);
+
+        await awardXpAndProcess({
+          guild: interaction.guild,
+          channel: interaction.channel,
+          userId: targetUser.id,
+          userDiscord: targetUser,
+          amount,
+        }).catch(() => {});
       }
 
       if (action === "take") {
         if (amount <= 0)
           return interaction.reply({ content: "Amount must be > 0.", flags: MessageFlags.Ephemeral });
-        targetObj.bonusXp = Math.max(0, targetObj.bonusXp - amount);
-        const bonusDelta = targetObj.bonusXp - prevBonusXp;
-        adjustWeeklyBonusXp(targetUser.id, bonusDelta);
-        adjustTwlPoints(targetUser.id, bonusDelta);
+
+        applyServerXpDelta(targetObj, -amount);
+        xpData.weeklyXp[targetUser.id] = Math.max(0, Number(xpData.weeklyXp[targetUser.id] || 0) - amount);
+        if (xpData.weeklyXp[targetUser.id] === 0) delete xpData.weeklyXp[targetUser.id];
       }
 
       if (action === "set") {
         if (amount < 0)
           return interaction.reply({ content: "Amount can't be negative.", flags: MessageFlags.Ephemeral });
-        targetObj.bonusXp = amount;
-        const bonusDelta = targetObj.bonusXp - prevBonusXp;
-        adjustWeeklyBonusXp(targetUser.id, bonusDelta);
-        adjustTwlPoints(targetUser.id, bonusDelta);
+
+        targetObj.xp = 0;
+        targetObj.level = 1;
+        targetObj.prestige = 0;
+        targetObj.announcedLevels = [];
+        targetObj.lastAnnouncedPrestige = 0;
+        applyServerXpDelta(targetObj, amount);
+        xpData.weeklyXp[targetUser.id] = amount;
       }
 
       if (action === "reset") {
@@ -1644,14 +1720,13 @@ client.on("interactionCreate", async (interaction) => {
         targetObj.bonusXp = 0;
         targetObj.announcedLevels = [];
         targetObj.lastAnnouncedPrestige = 0;
-        adjustWeeklyBonusXp(targetUser.id, -prevBonusXp);
-        adjustTwlPoints(targetUser.id, -prevBonusXp);
+        delete xpData.weeklyXp[targetUser.id];
+        delete xpData.weeklyBonusXp[targetUser.id];
         targetObj.lastXpAt = 0;
         targetObj.lastReactionXpAt = 0;
       }
 
       saveXpData(xpData);
-      saveTwlPointsData(twlPointsData);
 
       const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
       if (member) {
