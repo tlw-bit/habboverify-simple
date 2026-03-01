@@ -2027,23 +2027,23 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (cmd === "verifymsg") {
+      if (!(await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral }))) return;
+
       const perms = interaction.memberPermissions;
       const isAllowed =
         perms?.has(PermissionsBitField.Flags.Administrator) ||
         perms?.has(PermissionsBitField.Flags.ManageGuild);
 
       if (!isAllowed) {
-        return interaction.reply({
+        return interaction.editReply({
           content: "❌ You don't have permission to use this.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       const ch = interaction.channel;
       if (!ch || !ch.isTextBased()) {
-        return interaction.reply({
+        return interaction.editReply({
           content: "❌ Can't post in this channel.",
-          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -2060,15 +2060,13 @@ client.on("interactionCreate", async (interaction) => {
 
       const msg = await ch.send({ embeds: [embed] }).catch(() => null);
       if (!msg)
-        return interaction.reply({
+        return interaction.editReply({
           content: "❌ Failed to post the message.",
-          flags: MessageFlags.Ephemeral,
         });
 
       await msg.pin().catch(() => {});
-      return interaction.reply({
+      return interaction.editReply({
         content: "✅ Posted and pinned the verification instructions.",
-        flags: MessageFlags.Ephemeral,
       });
     }
 
