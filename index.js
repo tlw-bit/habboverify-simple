@@ -78,6 +78,25 @@ const VERIFY_CHANNEL_ID = "1462386529765691473";
 const LOG_CHANNEL_ID = "1456955298597175391";
 const WELCOME_CHANNEL_ID = "1456962809425559613";
 
+// Habbo users exist per hotel. You can override this list with:
+// HABBO_API_BASE_URLS="https://www.habbo.com,https://www.habbo.com.tr"
+const HABBO_API_BASE_URLS = (
+  process.env.HABBO_API_BASE_URLS ||
+  [
+    "https://www.habbo.com",
+    "https://www.habbo.com.tr",
+    "https://www.habbo.es",
+    "https://www.habbo.fr",
+    "https://www.habbo.de",
+    "https://www.habbo.it",
+    "https://www.habbo.nl",
+    "https://www.habbo.com.br",
+  ].join(",")
+)
+  .split(",")
+  .map((v) => v.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
 // ====== XP / LEVELING CONFIG ======
 const XP_FILE = resolveDataFilePath("XP_FILE", "xp.json", path.join(__dirname, "xp.json"));
 const XP_FILE_BAK = `${XP_FILE}.bak`;
@@ -413,48 +432,68 @@ function makeCode() {
 }
 
 async function fetchHabboMotto(name) {
-  const base = "https://www.habbo.com";
-  const url = `${base}/api/public/users?name=${encodeURIComponent(name)}`;
+  const blockedHotels = [];
+  let seenNotFound = false;
 
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 8000);
+  for (const base of HABBO_API_BASE_URLS) {
+    const url = `${base}/api/public/users?name=${encodeURIComponent(name)}`;
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 8000);
 
-  try {
-    const res = await fetchFn(url, {
-      signal: controller.signal,
-      headers: {
-        Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (ConciergeBot; +https://discord.com) ConciergeBot/1.0",
-        Referer: "https://www.habbo.com/",
-      },
-    });
+    try {
+      const res = await fetchFn(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (ConciergeBot; +https://discord.com) ConciergeBot/1.0",
+          Referer: `${base}/`,
+        },
+      });
 
-    console.log("[Habbo API]", res.status, url);
+      console.log("[Habbo API]", res.status, url);
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.log("Habbo API blocked:", res.status, text.slice(0, 300));
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.log("Habbo API error:", res.status, base, text.slice(0, 300));
 
-      if (res.status === 403) {
-        throw new Error(
-          "Habbo is blocking this bot's IP (403). Try hosting the bot on a different network/IP."
-        );
+        if (res.status === 403) {
+          blockedHotels.push(base);
+          continue;
+        }
+        if (res.status === 404) {
+          seenNotFound = true;
+          continue;
+        }
+        if (res.status === 429) throw new Error("Too many requests. Try again in a moment.");
+
+        throw new Error(`Habbo API error (${res.status}) from ${base}.`);
       }
-      if (res.status === 404) throw new Error("Habbo user not found on habbo.com.");
-      if (res.status === 429) throw new Error("Too many requests. Try again in a moment.");
 
-      throw new Error(`Habbo API error (${res.status}).`);
+      const data = await res.json();
+      return (data?.motto || "").trim();
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new Error("Habbo API timed out. Try again.");
+      }
+      throw err;
+    } finally {
+      clearTimeout(t);
     }
-
-    const data = await res.json();
-    return (data?.motto || "").trim();
-  } catch (err) {
-    if (err.name === "AbortError") throw new Error("Habbo API timed out. Try again.");
-    throw err;
-  } finally {
-    clearTimeout(t);
   }
+
+  if (blockedHotels.length === HABBO_API_BASE_URLS.length) {
+    throw new Error(
+      "Habbo API returned 403 from every configured hotel. " +
+        "Set HABBO_API_BASE_URLS to the hotels you use and ensure your host can reach them."
+    );
+  }
+
+  if (seenNotFound) {
+    throw new Error("Habbo user not found on configured hotels.");
+  }
+
+  throw new Error("Unable to fetch Habbo profile right now. Please try again.");
 }
 
 // ====== LOG EMBEDS ======
