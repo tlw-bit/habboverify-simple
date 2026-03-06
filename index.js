@@ -253,6 +253,13 @@ const PENDING_CODES_FILE = resolveDataFilePath(
 );
 const VERIFY_CODE_TTL_MS = 15 * 60 * 1000;
 const VERIFY_DM_DEDUPE_MS = 12 * 1000;
+const HABBO_API_BASES = String(
+  process.env.HABBO_API_BASES ||
+    "https://www.habbo.com,https://www.habbo.fr,https://www.habbo.com.tr,https://www.habbo.de,https://www.habbo.es,https://www.habbo.it,https://www.habbo.nl,https://www.habbo.fi,https://www.habbo.com.br"
+)
+  .split(",")
+  .map((x) => x.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
 
 console.log("[Storage] DATA_DIR:", DATA_DIR);
 console.log("[Storage] XP_FILE:", XP_FILE);
@@ -413,48 +420,67 @@ function makeCode() {
 }
 
 async function fetchHabboMotto(name) {
-  const base = "https://www.habbo.com";
-  const url = `${base}/api/public/users?name=${encodeURIComponent(name)}`;
+  const bases = HABBO_API_BASES.length ? HABBO_API_BASES : ["https://www.habbo.com"];
+  let saw403 = false;
+  let saw429 = false;
+  let sawTimeout = false;
 
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 8000);
+  for (const base of bases) {
+    const url = `${base}/api/public/users?name=${encodeURIComponent(name)}`;
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 8000);
 
-  try {
-    const res = await fetchFn(url, {
-      signal: controller.signal,
-      headers: {
-        Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (ConciergeBot; +https://discord.com) ConciergeBot/1.0",
-        Referer: "https://www.habbo.com/",
-      },
-    });
+    try {
+      const res = await fetchFn(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (ConciergeBot; +https://discord.com) ConciergeBot/1.0",
+          Referer: `${base}/`,
+        },
+      });
 
-    console.log("[Habbo API]", res.status, url);
+      console.log("[Habbo API]", res.status, url);
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.log("Habbo API blocked:", res.status, text.slice(0, 300));
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.log("Habbo API blocked:", res.status, text.slice(0, 300));
 
-      if (res.status === 403) {
-        throw new Error(
-          "Habbo is blocking this bot's IP (403). Try hosting the bot on a different network/IP."
-        );
+        if (res.status === 404) continue;
+        if (res.status === 403) {
+          saw403 = true;
+          continue;
+        }
+        if (res.status === 429) {
+          saw429 = true;
+          continue;
+        }
+
+        throw new Error(`Habbo API error (${res.status}).`);
       }
-      if (res.status === 404) throw new Error("Habbo user not found on habbo.com.");
-      if (res.status === 429) throw new Error("Too many requests. Try again in a moment.");
 
-      throw new Error(`Habbo API error (${res.status}).`);
+      const data = await res.json();
+      return (data?.motto || "").trim();
+    } catch (err) {
+      if (err.name === "AbortError") {
+        sawTimeout = true;
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(t);
     }
-
-    const data = await res.json();
-    return (data?.motto || "").trim();
-  } catch (err) {
-    if (err.name === "AbortError") throw new Error("Habbo API timed out. Try again.");
-    throw err;
-  } finally {
-    clearTimeout(t);
   }
+
+  if (saw429) throw new Error("Too many requests. Try again in a moment.");
+  if (saw403) {
+    throw new Error(
+      "Habbo blocked this bot on one or more hotels (403). The bot now retries multiple hotel domains, but if all are blocked you may need a different host/network IP."
+    );
+  }
+  if (sawTimeout) throw new Error("Habbo API timed out. Try again.");
+  throw new Error("Habbo user not found on supported hotels.");
 }
 
 // ====== LOG EMBEDS ======
@@ -1860,7 +1886,6 @@ client.on("interactionCreate", async (interaction) => {
 
       return interaction.reply({
         content: `✅ Updated <@${targetUser.id}> — **${total}** total, **${weekly}** this week.`,
-        flags: MessageFlags.Ephemeral,
       });
     }
 
