@@ -748,34 +748,86 @@ function loadXpDataSafe() {
   };
 
   const loadFile = (filePath) => {
-    if (!fs.existsSync(filePath)) return null;
-    const raw = fs.readFileSync(filePath, "utf8");
-    return normalize(JSON.parse(raw));
+    const exists = fs.existsSync(filePath);
+    if (!exists) return { exists: false, data: null, error: null };
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      return { exists: true, data: normalize(JSON.parse(raw)), error: null };
+    } catch (error) {
+      return { exists: true, data: null, error };
+    }
   };
 
-  try {
-    const primary = loadFile(XP_FILE);
-    if (primary) return primary;
-  } catch (err) {
-    console.error(`[XP] Failed to read ${XP_FILE}:`, err?.message || err);
+  const primary = loadFile(XP_FILE);
+  const backup = loadFile(XP_FILE_BAK);
+
+  if (primary.error) {
+    console.error(`[XP] Failed to read ${XP_FILE}:`, primary.error?.message || primary.error);
+  }
+  if (backup.error) {
+    console.error(`[XP] Failed to read ${XP_FILE_BAK}:`, backup.error?.message || backup.error);
   }
 
-  try {
-    const backup = loadFile(XP_FILE_BAK);
-    if (backup) {
-      console.warn(`[XP] Recovered XP data from backup: ${XP_FILE_BAK}`);
-      return backup;
+  const getScore = (obj) => {
+    const users = Object.values(obj?.users || {});
+    const userCount = users.length;
+    const totalProgress = users.reduce((acc, u) => {
+      return (
+        acc +
+        (Math.max(0, Number(u?.prestige) || 0) * 1000000) +
+        (Math.max(1, Number(u?.level) || 1) * 1000) +
+        Math.max(0, Number(u?.xp) || 0)
+      );
+    }, 0);
+    return (userCount * 1000000000) + totalProgress;
+  };
+
+  if (primary.data && backup.data) {
+    const primaryScore = getScore(primary.data);
+    const backupScore = getScore(backup.data);
+    if (backupScore > primaryScore) {
+      console.warn(
+        `[XP] Loaded backup because it has more progress than primary (${backupScore} > ${primaryScore}).`
+      );
+      return backup.data;
     }
-  } catch (err) {
-    console.error(`[XP] Failed to read ${XP_FILE_BAK}:`, err?.message || err);
+    return primary.data;
+  }
+
+  if (primary.data) return primary.data;
+  if (backup.data) {
+    console.warn(`[XP] Recovered XP data from backup: ${XP_FILE_BAK}`);
+    return backup.data;
+  }
+
+  const hasExistingStore = primary.exists || backup.exists;
+  if (hasExistingStore) {
+    throw new Error(
+      "XP store exists but could not be parsed from either primary or backup. Refusing to boot with empty XP data to avoid unintended level resets."
+    );
   }
 
   return base;
 }
 
 function saveXpData(obj) {
+  if (!obj || typeof obj !== "object" || !obj.users || typeof obj.users !== "object") {
+    throw new Error("Refusing to save invalid XP payload.");
+  }
+
+  if (fs.existsSync(XP_FILE)) {
+    try {
+      fs.copyFileSync(XP_FILE, XP_FILE_BAK);
+    } catch (err) {
+      console.warn(`[XP] Failed to refresh backup ${XP_FILE_BAK}:`, err?.message || err);
+    }
+  }
+
   writeJsonFileAtomic(XP_FILE, obj);
-  writeJsonFileAtomic(XP_FILE_BAK, obj);
+
+  if (!fs.existsSync(XP_FILE_BAK)) {
+    writeJsonFileAtomic(XP_FILE_BAK, obj);
+  }
 }
 
 let xpData = loadXpDataSafe();
