@@ -97,6 +97,26 @@ const commands = [
     .setDMPermission(false)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
+
+  // ----- Raffles -----
+  new SlashCommandBuilder()
+    .setName("add")
+    .setDescription("Raffle: manually assign a ticket number to a user")
+    .setDMPermission(false)
+    .addUserOption((o) => o.setName("user").setDescription("User").setRequired(true))
+    .addIntegerOption((o) => o.setName("number").setDescription("Ticket number").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("remove")
+    .setDescription("Raffle: remove a ticket number assignment")
+    .setDMPermission(false)
+    .addIntegerOption((o) => o.setName("number").setDescription("Ticket number").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("raffleview")
+    .setDescription("Raffle: view manual ticket assignments in this channel")
+    .setDMPermission(false),
+
   // ----- Utility -----
   new SlashCommandBuilder()
     .setName("ping")
@@ -119,7 +139,7 @@ const rest = new REST({ version: "10" }).setToken(token);
     console.log("🚀 Deploying Concierge guild commands (overwrites the list)...");
     await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
     console.log(
-      "✅ Done. Commands are now: /level /xpinfo /xpadmin /rank /xpleaderboard /invites /invleaderboard /getcode /verify /verifymsg /ping"
+      "✅ Done. Commands are now: /level /xpinfo /xpadmin /rank /xpleaderboard /invites /invleaderboard /getcode /verify /verifymsg /add /remove /raffleview /ping"
     );
   } catch (err) {
     console.error("❌ Failed to deploy commands:", err);

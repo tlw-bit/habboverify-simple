@@ -207,6 +207,20 @@ const SLASH_COMMANDS = [
     options: [{ type: 3, name: "habbo", description: "Your Habbo username", required: true }],
   },
   { name: "verifymsg", description: "Post and pin verification instructions" },
+  {
+    name: "add",
+    description: "Raffle: manually assign a ticket number to a user",
+    options: [
+      { type: 6, name: "user", description: "User", required: true },
+      { type: 4, name: "number", description: "Ticket number", required: true },
+    ],
+  },
+  {
+    name: "remove",
+    description: "Raffle: remove a ticket number assignment",
+    options: [{ type: 4, name: "number", description: "Ticket number", required: true }],
+  },
+  { name: "raffleview", description: "Raffle: view manual ticket assignments in this channel" },
 ];
 
 // Optional level roles: level -> roleId
@@ -251,8 +265,18 @@ const PENDING_CODES_FILE = resolveDataFilePath(
   "pending-codes.json",
   path.join(__dirname, "pending-codes.json")
 );
+const RAFFLES_FILE = resolveDataFilePath(
+  "RAFFLES_FILE",
+  "raffles.json",
+  path.join(__dirname, "raffles.json")
+);
 const VERIFY_CODE_TTL_MS = 15 * 60 * 1000;
 const VERIFY_DM_DEDUPE_MS = 12 * 1000;
+const RAFFLE_HOST_ROLE_IDS = String(process.env.RAFFLE_HOST_ROLE_IDS || "")
+  .split(",")
+  .map((x) => x.trim())
+  .filter(Boolean);
+const RAFFLE_HOST_ROLE_NAME = String(process.env.RAFFLE_HOST_ROLE_NAME || "raffle host").trim().toLowerCase();
 const HABBO_API_BASES = String(
   process.env.HABBO_API_BASES ||
     "https://www.habbo.com,https://www.habbo.fr,https://www.habbo.com.tr,https://www.habbo.de,https://www.habbo.es,https://www.habbo.it,https://www.habbo.nl,https://www.habbo.fi,https://www.habbo.com.br"
@@ -266,6 +290,7 @@ console.log("[Storage] XP_FILE:", XP_FILE);
 console.log("[Storage] INVITES_FILE:", INVITES_FILE);
 console.log("[Storage] TWL_POINTS_FILE:", TWL_POINTS_FILE);
 console.log("[Storage] PENDING_CODES_FILE:", PENDING_CODES_FILE);
+console.log("[Storage] RAFFLES_FILE:", RAFFLES_FILE);
 
 // ====== LEVEL-UP DEDUPLICATION ======
 // Single source of truth: a Set keyed by "<userId>-<prestige>-<level>"
@@ -330,7 +355,95 @@ function saveTwlPointsData(obj) {
 
 let twlPointsData = loadTwlPointsSafe();
 
+// ====== RAFFLE MANUAL ASSIGNMENTS ======
+function loadRafflesSafe() {
+  if (!fs.existsSync(RAFFLES_FILE)) return { channels: {} };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(RAFFLES_FILE, "utf8"));
+    if (!parsed || typeof parsed !== "object") return { channels: {} };
+    if (!parsed.channels || typeof parsed.channels !== "object") parsed.channels = {};
+    return parsed;
+  } catch {
+    return { channels: {} };
+  }
+}
+
+function saveRafflesData(obj) {
+  writeJsonFileAtomic(RAFFLES_FILE, obj);
+}
+
+let rafflesData = loadRafflesSafe();
+
+function ensureRaffleChannel(channelId) {
+  if (!rafflesData.channels[channelId] || typeof rafflesData.channels[channelId] !== "object") {
+    rafflesData.channels[channelId] = { slots: {} };
+  }
+  if (!rafflesData.channels[channelId].slots || typeof rafflesData.channels[channelId].slots !== "object") {
+    rafflesData.channels[channelId].slots = {};
+  }
+  return rafflesData.channels[channelId];
+}
+
+function setManualRaffleSlot(channelId, slotNumber, userId) {
+  const channelStore = ensureRaffleChannel(channelId);
+  channelStore.slots[String(slotNumber)] = String(userId);
+  saveRafflesData(rafflesData);
+}
+
+function removeManualRaffleSlot(channelId, slotNumber) {
+  const channelStore = ensureRaffleChannel(channelId);
+  const key = String(slotNumber);
+  if (!channelStore.slots[key]) return null;
+  const userId = channelStore.slots[key];
+  delete channelStore.slots[key];
+  saveRafflesData(rafflesData);
+  return userId;
+}
+
+function formatRaffleChannelAssignments(channelId) {
+  const channelStore = ensureRaffleChannel(channelId);
+  const entries = Object.entries(channelStore.slots)
+    .map(([slot, userId]) => ({ slot: Number(slot), userId }))
+    .filter((x) => Number.isFinite(x.slot) && x.slot > 0)
+    .sort((a, b) => a.slot - b.slot);
+
+  if (!entries.length) return "No manual ticket assignments in this channel.";
+  return entries.map((x) => `**${x.slot}.** <@${x.userId}>`).join("\n");
+}
+
+function canManageRaffle(interaction) {
+  const perms = interaction.memberPermissions;
+  const isAdmin =
+    perms?.has(PermissionsBitField.Flags.Administrator) ||
+    perms?.has(PermissionsBitField.Flags.ManageGuild);
+  if (isAdmin) return true;
+
+  const memberRoles = interaction.member?.roles?.cache;
+  if (!memberRoles) return false;
+
+  if (RAFFLE_HOST_ROLE_IDS.length) {
+    for (const roleId of RAFFLE_HOST_ROLE_IDS) {
+      if (memberRoles.has(roleId)) return true;
+    }
+  }
+
+  if (RAFFLE_HOST_ROLE_NAME) {
+    for (const role of memberRoles.values()) {
+      if (String(role.name || "").trim().toLowerCase() === RAFFLE_HOST_ROLE_NAME) return true;
+    }
+  }
+
+  return false;
+}
+
+function getRaffleHostHint() {
+  if (RAFFLE_HOST_ROLE_IDS.length) return `Raffle host role IDs configured (${RAFFLE_HOST_ROLE_IDS.join(", ")}).`;
+  if (RAFFLE_HOST_ROLE_NAME) return `Role name match enabled: \`${RAFFLE_HOST_ROLE_NAME}\`.`;
+  return "No raffle host roles configured.";
+}
+
 function getTopTwlWeekly(limit = 3) {
+
   return Object.entries(twlPointsData.weeklyCounts || {})
     .map(([uid, count]) => ({ uid, count: Number(count) || 0 }))
     .filter((x) => x.count > 0)
@@ -1939,6 +2052,52 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({
         content: `✅ Updated <@${targetUser.id}> — **${total}** total, **${weekly}** this week.`,
       });
+    }
+
+    if (cmd === "add") {
+      if (!canManageRaffle(interaction)) {
+        return interaction.reply({
+          content: `❌ You need Admin/Manage Server or the raffle host role to use this. ${getRaffleHostHint()}`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const targetUser = interaction.options.getUser("user", true);
+      const number = interaction.options.getInteger("number", true);
+
+      if (!Number.isInteger(number) || number <= 0) {
+        return interaction.reply({ content: "Ticket number must be a positive integer.", flags: MessageFlags.Ephemeral });
+      }
+
+      setManualRaffleSlot(interaction.channelId, number, targetUser.id);
+      return interaction.reply(`✅ Set ticket **#${number}** to <@${targetUser.id}> in this channel.`);
+    }
+
+    if (cmd === "remove") {
+      if (!canManageRaffle(interaction)) {
+        return interaction.reply({
+          content: `❌ You need Admin/Manage Server or the raffle host role to use this. ${getRaffleHostHint()}`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const number = interaction.options.getInteger("number", true);
+      if (!Number.isInteger(number) || number <= 0) {
+        return interaction.reply({ content: "Ticket number must be a positive integer.", flags: MessageFlags.Ephemeral });
+      }
+
+      const removedUserId = removeManualRaffleSlot(interaction.channelId, number);
+      if (!removedUserId) {
+        return interaction.reply({ content: `No assignment exists for ticket **#${number}** in this channel.`, flags: MessageFlags.Ephemeral });
+      }
+
+      return interaction.reply(`✅ Removed ticket **#${number}** (was <@${removedUserId}>).`);
+    }
+
+    if (cmd === "raffleview") {
+      const text = formatRaffleChannelAssignments(interaction.channelId);
+      return interaction.reply(`🎟️ **Manual raffle assignments**
+${text}`);
     }
 
     if (cmd === "invites") {
